@@ -50,83 +50,8 @@ class Brain:
         self.vol_per_sec: float  = 0.55    # σ BTC en $/segundo (se actualiza en vivo)
         self.edge_threshold: float = EDGE_THRESHOLD
         self.history: list[dict]   = []
-        self.arb_history: list[dict] = []  # outcomes de ventanas en modo arbitrage
-        self.prev_cl_open: float | None = None   # CL open de la ventana anterior
         self._price_buf: list      = []    # (timestamp_rel, chainlink_price)
         self._load()
-
-    # ── Arbitrage timing (¿es buen momento para arbitrage?) ────────────────────
-
-    def arbitrage_features(self, cl_open: float, spot_open: float) -> dict:
-        """
-        Extrae las features predictivas en la apertura de la ventana.
-        Predicen si el mercado va a OSCILAR (ambos lados tocan 40c = doble fill)
-        o TENDER (un solo lado = pérdida).
-        """
-        open_diff  = abs(spot_open - cl_open)   # lag spot-CL: grande = dirección ya leaning
-        vol        = self.vol_per_sec           # volatilidad reciente: alta = tendencia
-        # Tendencia de la ventana anterior: grande = mercado en momentum (malo para arb)
-        prev_trend = abs(cl_open - self.prev_cl_open) if self.prev_cl_open else 0.0
-        return {
-            "open_diff":  round(open_diff, 2),
-            "vol":        round(vol, 4),
-            "prev_trend": round(prev_trend, 2),
-        }
-
-    def arbitrage_score(self, features: dict) -> float:
-        """
-        Probabilidad estimada de DOBLE FILL (arbitrage completo) dadas las features.
-        Combina un prior heurístico con el histórico empírico en condiciones similares.
-        0 = casi seguro tendencia (mala) | 1 = casi seguro oscilación (buena)
-        """
-        prior   = self._arb_prior(features)
-        similar = self._arb_similar(features)
-        if len(similar) >= 3:
-            empirical = sum(1 for h in similar if h["completed"]) / len(similar)
-            w = min(len(similar) / 12.0, 0.7)   # hasta 70% peso empírico
-            return round((1 - w) * prior + w * empirical, 3)
-        return round(prior, 3)
-
-    def record_arbitrage_outcome(self, features: dict, completed: bool) -> None:
-        """Registra si una ventana de arbitrage logró doble fill (completed)."""
-        self.arb_history.append({**features, "completed": completed})
-        self._save()
-
-    def set_prev_window(self, cl_open: float) -> None:
-        """Guarda el CL open para calcular prev_trend en la próxima ventana."""
-        self.prev_cl_open = cl_open
-
-    def _arb_prior(self, f: dict) -> float:
-        """
-        Prior heurístico: el arbitrage funciona en mercados LATERALES.
-        Penaliza volatilidad alta y tendencia previa fuerte.
-        NOTA: Chainlink lagea a Binance ~$100 de forma estructural, por eso
-        open_diff usa divisor alto (solo penaliza diffs anómalos >$250).
-        """
-        # prev_trend (tendencia neta previa) es el mejor predictor de TENDENCIA.
-        # vol penaliza menos porque vol alta puede ser oscilación (buena para arb).
-        s = 1.0
-        s *= max(0.0, 1.0 - f["open_diff"]  / 250.0)   # diff $250 → 0 (lag normal ~$100 ok)
-        s *= max(0.0, 1.0 - f["vol"]        / 1.80)    # vol $1.8/s → 0 (penaliza suave)
-        s *= max(0.0, 1.0 - f["prev_trend"] / 160.0)   # tendencia $160 → 0 (peso principal)
-        return max(0.0, min(1.0, s))
-
-    def _arb_similar(self, f: dict) -> list[dict]:
-        """Ventanas históricas con features parecidas (para estimación empírica)."""
-        out = []
-        for h in self.arb_history:
-            if (abs(h["open_diff"]  - f["open_diff"])  < 50 and
-                abs(h["vol"]        - f["vol"])        < 0.30 and
-                abs(h["prev_trend"] - f["prev_trend"]) < 80):
-                out.append(h)
-        return out
-
-    def arb_summary(self) -> str:
-        n = len(self.arb_history)
-        if n == 0:
-            return "ArbScore: sin historial"
-        doubles = sum(1 for h in self.arb_history if h["completed"])
-        return f"ArbScore: {doubles}/{n} dobles ({doubles/n:.0%}) histórico"
 
     # ── API pública ───────────────────────────────────────────────────────────
 
@@ -327,10 +252,8 @@ class Brain:
                 self.vol_per_sec    = d.get("vol", self.vol_per_sec)
                 self.edge_threshold = d.get("threshold", self.edge_threshold)
                 self.history        = d.get("history", [])
-                self.arb_history    = d.get("arb_history", [])
-                self.prev_cl_open   = d.get("prev_cl_open")
-                print(f"  [Brain] Cargado: {len(self.history)} ops dir | "
-                      f"{len(self.arb_history)} ventanas arb | "
+                print(f"  [Brain] Cargado: {len(self.history)} ops | "
+                      f"threshold={self.edge_threshold:.0%} | "
                       f"vol=${self.vol_per_sec:.3f}/s")
             except Exception:
                 pass
@@ -338,9 +261,7 @@ class Brain:
     def _save(self) -> None:
         with open(STATS_FILE, "w", encoding="utf-8") as f:
             json.dump({
-                "vol":          round(self.vol_per_sec, 6),
-                "threshold":    round(self.edge_threshold, 6),
-                "history":      self.history[-300:],
-                "arb_history":  self.arb_history[-300:],
-                "prev_cl_open": self.prev_cl_open,
+                "vol":       round(self.vol_per_sec, 6),
+                "threshold": round(self.edge_threshold, 6),
+                "history":   self.history[-300:],
             }, f, indent=2)

@@ -19,41 +19,40 @@ Bitcoin al cierre es ≥ al de apertura, y a **"Down"** en caso contrario.
 
 ---
 
-## 🧠 Estrategias
+## 🧠 Estrategia
 
-El bot elige **un modo por ventana** (son mutuamente excluyentes):
+El bot opera un único enfoque: **direccional**.
 
 | Modo | Cuándo | Lógica |
 |------|--------|--------|
-| **ARBITRAGE** | mercado abre ~50/50 y el `ArbScore` predice oscilación | Limit a 40¢ en ambos lados. Si ambos llenan → +$0.50 garantizado |
-| **DIRECCIONAL** | mercado abre inclinado + señal de movimiento | El `Brain` apuesta un solo lado si detecta edge (lag Chainlink/Binance) |
-| **SKIP** | mercado sesgado sin señal clara | No opera (coste $0) |
+| **DIRECCIONAL** | hay precios y movimiento spot en la apertura | El `Brain` apuesta **un solo lado** si detecta edge durante la ventana |
+| **SKIP** | sin precios/señal | No opera (coste $0) |
 
 ### El Brain (motor de decisión)
 
 - Modelo probabilístico (random walk tipo Black-Scholes digital) sobre Chainlink.
-- Aprende de cada resultado y ajusta su `edge_threshold` (mínima ventaja exigida).
-- `ArbScore`: estima la probabilidad de doble fill según la volatilidad y la tendencia previa.
+- Dos edges, ambos basados en el **lag** entre Binance (tiempo real) y Chainlink
+  (actualiza cada ~27s), que el precio de Polymarket no refleja al instante:
+  - **Edge 1** (apertura, T<120s): el spot ya se movió pero el mercado sigue ~50/50.
+  - **Edge 2** (oracle lag, T=2-10min): Chainlink confirma dirección que el mercado no ha repreciado.
+- Una sola apuesta por ventana (nunca ambos lados).
+- Aprende de cada resultado y ajusta su `edge_threshold` (a partir de 20 ops).
 - Persiste su entrenamiento en `brain_stats.json` (sobrevive reinicios).
-
-### Salida de fill único (corte de pérdidas)
-
-Si en arbitrage solo llena un lado (el que el mercado abandona), el bot **vende** la
-posición al detectar que el precio va en contra, limitando la pérdida a ~−$0.25 en vez
-de −$1.00.
 
 ---
 
-## 🔬 Hallazgos empíricos (78+ ventanas en dry run)
+## 🔬 Hallazgos empíricos (dry run)
 
 El dry run cumplió su función: **dar evidencia antes de arriesgar dinero.**
 
-- **El arbitrage de doble límite NO funciona aquí.** El mercado BTC 15m cierra a un
-  extremo (0.01/0.99) el **88%** de las veces — *tiende, no oscila*. Resultado: **0 dobles
-  en 7 intentos**. Por eso `ENABLE_ARBITRAGE=false` por defecto.
-- **El direccional está en evaluación.** Muestra resultados prometedores pero con sesgo
-  de régimen (gana apostando con la tendencia). Veredicto pendiente de ~40 operaciones
-  a través de mercados alcistas, bajistas y laterales.
+- **El arbitrage de doble límite 40¢ NO funciona aquí** (estrategia original, descartada y
+  eliminada del código). El mercado BTC 15m cierra a un extremo (0.01/0.99) el **88%** de las
+  veces — *tiende, no oscila* — así que ambos lados nunca llenan a la vez: **0 dobles en 7
+  intentos**.
+- **El direccional está en evaluación.** Resultados prometedores pero con sesgo de régimen
+  (ganó apostando con la tendencia bajista). Veredicto pendiente de ~40 operaciones a través
+  de mercados alcistas, bajistas y laterales — el test clave es si **gana también apostando
+  UP** cuando BTC sube.
 
 ---
 
@@ -62,10 +61,10 @@ El dry run cumplió su función: **dar evidencia antes de arriesgar dinero.**
 ```
 polymarket-btc-up-down/
 ├── main.py          # Punto de entrada
-├── strategy.py      # Máquina de estados: decide modo, monitorea ventana
-├── brain.py         # Motor de decisión + scorer de arbitrage + aprendizaje
+├── strategy.py      # Bucle por ventana: decide modo, monitorea, apuesta
+├── brain.py         # Motor de decisión direccional + aprendizaje
 ├── market.py        # Encuentra el mercado activo (Gamma API, slug por timestamp)
-├── executor.py      # Órdenes CLOB: place / sell / cancel (py-clob-client)
+├── executor.py      # Órdenes CLOB: place / cancel (py-clob-client)
 ├── data_feed.py     # Precios: Chainlink (Polygon RPC) + Binance (fallback)
 ├── logger.py        # Persistencia: results.csv + prices.csv
 ├── dashboard.py     # Panel web Flask (http://localhost:5000)
@@ -108,7 +107,6 @@ POLYMARKET_PASSPHRASE=...
 POLYGON_RPC=https://polygon-mainnet.g.alchemy.com/v2/TU_API_KEY
 
 DRY_RUN=true                       # true = simulación | false = dinero real
-ENABLE_ARBITRAGE=false             # desactivado por evidencia empírica
 ```
 
 ---

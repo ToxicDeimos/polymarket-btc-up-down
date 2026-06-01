@@ -11,7 +11,6 @@ from config import (
     POLYMARKET_SECRET,
     POLYMARKET_PASSPHRASE,
     CLOB_HOST,
-    TARGET_PRICE,
     ORDER_SIZE_USDC,
     DRY_RUN,
 )
@@ -33,57 +32,27 @@ def build_client() -> ClobClient:
     return client
 
 
-def place_limit_order(client: ClobClient, token_id: str, side_label: str) -> dict:
+def place_limit_order(client: ClobClient, token_id: str,
+                      side_label: str, price: float) -> dict:
     """
-    Coloca una orden límite de compra a TARGET_PRICE.
-    size = ORDER_SIZE_USDC / TARGET_PRICE  (número de shares)
+    Coloca una orden límite de compra al `price` indicado (precio de mercado
+    del lado que el Brain quiere apostar). size = ORDER_SIZE_USDC / price.
     """
-    size = round(ORDER_SIZE_USDC / TARGET_PRICE, 4)   # p.ej. 2.5 shares a 40¢
+    size = round(ORDER_SIZE_USDC / price, 4)
 
     if DRY_RUN:
         fake_id = f"DRY-{side_label.strip()}-{token_id[:6]}"
-        print(f"  [DRY][{side_label}] SIMULADO — {size} shares @ {TARGET_PRICE} "
-              f"| coste: ${ORDER_SIZE_USDC} | payout si gana: ${size:.2f}")
+        print(f"  [DRY][{side_label}] SIMULADO — {size} shares @ {price} "
+              f"| coste: ${ORDER_SIZE_USDC}")
         return {"orderID": fake_id, "dry_run": True}
 
-    order_args = OrderArgs(
-        token_id=token_id,
-        price=TARGET_PRICE,
-        size=size,
-        side="BUY",
-    )
+    order_args = OrderArgs(token_id=token_id, price=price, size=size, side="BUY")
     signed_order = client.create_order(order_args)
     response = client.post_order(signed_order, OrderType.GTC)
 
     order_id = response.get("orderID") or response.get("order_id", "???")
     print(f"  [{side_label}] Orden colocada — ID: {order_id} | "
-          f"{size} shares @ {TARGET_PRICE} | coste: ${ORDER_SIZE_USDC}")
-    return response
-
-
-def sell_position(client: ClobClient, token_id: str,
-                  shares: float, current_bid: float, side_label: str) -> dict:
-    """
-    Vende shares ya compradas al precio bid actual (stop loss).
-    Se usa cuando Brain detecta que la posición va a perder.
-    Recuperamos current_bid * shares en vez de perder todo.
-    """
-    if DRY_RUN:
-        recovered = round(current_bid * shares, 4)
-        loss      = round(ORDER_SIZE_USDC - recovered, 4)
-        print(f"  [DRY][SELL {side_label}] {shares} shares @ {current_bid} "
-              f"→ recupero ${recovered:.2f} | pérdida: -${loss:.2f}")
-        return {"sold": True, "recovered": recovered, "loss": loss}
-
-    order_args = OrderArgs(
-        token_id=token_id,
-        price=current_bid,
-        size=shares,
-        side="SELL",
-    )
-    signed_order = client.create_order(order_args)
-    response = client.post_order(signed_order, OrderType.GTC)
-    print(f"  [SELL {side_label}] {shares} shares @ {current_bid} → stop loss ejecutado")
+          f"{size} shares @ {price} | coste: ${ORDER_SIZE_USDC}")
     return response
 
 

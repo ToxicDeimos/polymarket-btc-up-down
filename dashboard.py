@@ -96,37 +96,14 @@ def api_brain():
 
 @app.route("/api/training")
 def api_training():
-    """Estado del entrenamiento del Brain: muestras, peso empírico, buckets."""
+    """Estado del entrenamiento direccional del Brain."""
     if not os.path.exists(BRAIN_FILE):
         return jsonify({})
     try:
         with open(BRAIN_FILE, encoding="utf-8") as f:
             data = json.load(f)
 
-        arb = data.get("arb_history", [])
-        dir_hist = data.get("history", [])
-
-        # ── ArbScore: progreso de aprendizaje ─────────────────────────────────
-        arb_total   = len(arb)
-        arb_doubles = sum(1 for h in arb if h.get("completed"))
-        # Peso empírico actual (replica la lógica del brain: hasta 70% a las 12 muestras)
-        emp_weight  = round(min(arb_total / 12.0, 0.7) * 100, 0)
-
-        # Buckets por condición: ¿qué open_diff/vol predicen doble fill?
-        buckets = {
-            "lateral (vol<0.3)":   {"total": 0, "doubles": 0},
-            "medio (0.3-0.6)":     {"total": 0, "doubles": 0},
-            "volátil (vol>0.6)":   {"total": 0, "doubles": 0},
-        }
-        for h in arb:
-            v = h.get("vol", 0)
-            key = "lateral (vol<0.3)" if v < 0.3 else "medio (0.3-0.6)" if v < 0.6 else "volátil (vol>0.6)"
-            buckets[key]["total"]   += 1
-            if h.get("completed"):
-                buckets[key]["doubles"] += 1
-
-        # ── Direccional (la estrategia viva) ──────────────────────────────────
-        # Leído de results.csv: ops reales con entrada, separadas por lado y régimen.
+        # ── Direccional: ops reales con entrada, separadas por lado ───────────
         dir_ops = []
         for r in _read_csv(RESULTS_FILE):
             if r.get("mode") != "directional":
@@ -167,9 +144,6 @@ def api_training():
             "down_win_rate":   _wr(down_ops),
             "ops_to_adapt":    max(0, 20 - d_total),
             "ops_to_decide":   max(0, 40 - d_total),
-            # Arbitrage (congelado, solo referencia histórica)
-            "arb_total":       arb_total,
-            "arb_double_rate": round(arb_doubles / arb_total * 100, 1) if arb_total else 0,
         })
     except Exception as e:
         return jsonify({"error": str(e)})
