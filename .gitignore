@@ -1,4 +1,18 @@
+# Secretos
 .env
+
+# Python
 __pycache__/
 *.pyc
 *.log
+venv/
+.venv/
+
+# Datos generados en runtime (no son código fuente)
+results.csv
+prices.csv
+brain_stats.json
+status.json
+
+# Tooling local
+.claude/

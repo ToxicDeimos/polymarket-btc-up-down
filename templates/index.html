@@ -1,0 +1,435 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Polymarket BTC Bot</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg: #0d1117; --card: #161b22; --border: #30363d;
+    --green: #3fb950; --red: #f85149; --yellow: #d29922;
+    --blue: #58a6ff; --purple: #bc8cff; --text: #e6edf3;
+    --muted: #8b949e;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:var(--bg); color:var(--text); font-family:'Segoe UI',system-ui,sans-serif; font-size:14px; }
+  h1 { font-size:18px; font-weight:600; }
+  h2 { font-size:13px; font-weight:600; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); margin-bottom:12px; }
+
+  .header { padding:16px 24px; border-bottom:1px solid var(--border); display:flex; align-items:center; gap:16px; }
+  .dot { width:8px; height:8px; border-radius:50%; }
+  .dot.on { background:var(--green); box-shadow:0 0 6px var(--green); }
+  .dot.off { background:var(--muted); }
+  .badge { padding:2px 8px; border-radius:12px; font-size:11px; font-weight:600; }
+  .badge.arb  { background:#1f3a2e; color:var(--green); }
+  .badge.dir  { background:#1a2a4a; color:var(--blue); }
+  .badge.skip { background:#2a2a1a; color:var(--yellow); }
+  .badge.off  { background:#2a1a1a; color:var(--muted); }
+
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:12px; padding:16px 24px; }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:8px; padding:16px; }
+  .card .val { font-size:24px; font-weight:700; margin-top:4px; }
+  .card .sub { font-size:11px; color:var(--muted); margin-top:2px; }
+  .green { color:var(--green); }
+  .red   { color:var(--red); }
+  .blue  { color:var(--blue); }
+  .yellow{ color:var(--yellow); }
+
+  .section { padding:0 24px 24px; }
+  .two-col { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+  @media(max-width:900px) { .two-col { grid-template-columns:1fr; } }
+
+  .chart-wrap { background:var(--card); border:1px solid var(--border); border-radius:8px; padding:16px; }
+  canvas { max-height:220px; }
+
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th { text-align:left; padding:8px 12px; border-bottom:1px solid var(--border); color:var(--muted); font-weight:500; font-size:11px; text-transform:uppercase; }
+  td { padding:8px 12px; border-bottom:1px solid #21262d; }
+  tr:last-child td { border-bottom:none; }
+  tr:hover td { background:#1c2128; }
+
+  .pill { display:inline-block; padding:1px 7px; border-radius:10px; font-size:11px; font-weight:600; }
+  .pill.up   { background:#1f3a2e; color:var(--green); }
+  .pill.down { background:#3a1f1f; color:var(--red); }
+  .pill.arb  { background:#1f3a2e; color:var(--green); }
+  .pill.dir  { background:#1a2a4a; color:var(--blue); }
+  .pill.skip { background:#2a2a1a; color:var(--yellow); }
+  .pill.pend { background:#2a2a2a; color:var(--muted); }
+  .pill.win  { background:#1f3a2e; color:var(--green); }
+  .pill.lose { background:#3a1f1f; color:var(--red); }
+
+  .live-box { background:var(--card); border:1px solid var(--border); border-radius:8px; padding:16px; }
+  .price-row { display:flex; justify-content:space-between; align-items:center; padding:8px 0; border-bottom:1px solid #21262d; }
+  .price-row:last-child { border-bottom:none; }
+  .price-label { color:var(--muted); font-size:12px; }
+  .price-val { font-size:20px; font-weight:700; font-variant-numeric:tabular-nums; }
+  .diff-bar { height:4px; background:#21262d; border-radius:2px; margin-top:8px; overflow:hidden; }
+  .diff-fill { height:100%; border-radius:2px; transition:width .5s; }
+
+  #last-update { font-size:11px; color:var(--muted); margin-left:auto; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="dot" id="status-dot"></div>
+  <h1>Polymarket BTC Up/Down Bot</h1>
+  <span class="badge off" id="mode-badge">OFFLINE</span>
+  <span id="last-update">—</span>
+</div>
+
+<!-- KPIs -->
+<div class="grid" id="kpi-grid">
+  <div class="card">
+    <h2>P&L Total</h2>
+    <div class="val" id="kpi-pnl">$0.00</div>
+    <div class="sub" id="kpi-roi">ROI: 0%</div>
+  </div>
+  <div class="card">
+    <h2>Win Rate</h2>
+    <div class="val" id="kpi-wr">—</div>
+    <div class="sub" id="kpi-wr-sub">últimas 20 ops</div>
+  </div>
+  <div class="card">
+    <h2>Ciclos Hoy</h2>
+    <div class="val" id="kpi-cycles">0</div>
+    <div class="sub" id="kpi-modes">arb / dir / skip</div>
+  </div>
+  <div class="card">
+    <h2>BTC Chainlink</h2>
+    <div class="val blue" id="kpi-btc">—</div>
+    <div class="sub" id="kpi-diff">diff ventana: —</div>
+  </div>
+  <div class="card">
+    <h2>Brain Threshold</h2>
+    <div class="val" id="kpi-thr">—</div>
+    <div class="sub" id="kpi-vol">vol: —</div>
+  </div>
+  <div class="card">
+    <h2>Ventana Actual</h2>
+    <div class="val" id="kpi-window" style="font-size:15px">—</div>
+    <div class="sub" id="kpi-time-left">—</div>
+  </div>
+</div>
+
+<!-- Charts + Live -->
+<div class="section">
+  <div class="two-col">
+    <div class="chart-wrap">
+      <h2>P&L Acumulado</h2>
+      <canvas id="pnl-chart"></canvas>
+    </div>
+    <div class="chart-wrap">
+      <h2>Precios Ventana Actual</h2>
+      <canvas id="price-chart"></canvas>
+    </div>
+  </div>
+</div>
+
+<!-- Entrenamiento del Brain (direccional) -->
+<div class="section">
+  <div class="card">
+    <h2>Entrenamiento Direccional</h2>
+    <div style="display:grid; grid-template-columns:1.1fr 1fr; gap:24px;">
+
+      <!-- Progreso hacia decisión -->
+      <div>
+        <div style="display:flex; justify-content:space-between; margin-bottom:6px;">
+          <span class="price-label">Progreso hacia decisión (40 ops para veredicto)</span>
+          <span id="dir-progress-pct" style="font-weight:700;">0%</span>
+        </div>
+        <div class="diff-bar" style="height:10px;">
+          <div id="dir-progress-fill" class="diff-fill" style="width:0%; background:linear-gradient(90deg,#58a6ff,#3fb950);"></div>
+        </div>
+        <div class="sub" id="dir-eta" style="margin-top:6px;">—</div>
+
+        <div style="margin-top:16px; display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px;">
+          <div class="card" style="padding:10px;">
+            <div class="sub">Operaciones</div>
+            <div style="font-size:20px; font-weight:700;" id="dir-ops">0</div>
+          </div>
+          <div class="card" style="padding:10px;">
+            <div class="sub">Win rate</div>
+            <div style="font-size:20px; font-weight:700;" id="dir-wr">—</div>
+          </div>
+          <div class="card" style="padding:10px;">
+            <div class="sub">P&L direccional</div>
+            <div style="font-size:20px; font-weight:700;" id="dir-pnl">—</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Detección de sesgo / régimen -->
+      <div>
+        <div class="price-label" style="margin-bottom:10px;">
+          ¿Edge real o seguir tendencia? — win rate por lado
+        </div>
+        <table style="width:100%;">
+          <thead>
+            <tr><th>Lado</th><th>Entradas</th><th>Win rate</th></tr>
+          </thead>
+          <tbody id="side-body"></tbody>
+        </table>
+        <div class="sub" id="bias-note" style="margin-top:12px;">—</div>
+        <div class="sub" style="margin-top:8px; color:var(--muted);">
+          Arbitrage (desactivado): <span id="arb-ref">—</span>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<!-- Tabla de trades -->
+<div class="section">
+  <div class="card" style="overflow-x:auto">
+    <h2>Historial de Ventanas</h2>
+    <table id="results-table">
+      <thead>
+        <tr>
+          <th>Ventana</th>
+          <th>UP open</th>
+          <th>DOWN open</th>
+          <th>UP close</th>
+          <th>DOWN close</th>
+          <th>Fills</th>
+          <th>Winner</th>
+          <th>P&L</th>
+          <th>Acumulado</th>
+        </tr>
+      </thead>
+      <tbody id="results-body"></tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+// ── Charts ────────────────────────────────────────────────────────────────────
+const pnlCtx   = document.getElementById('pnl-chart').getContext('2d');
+const priceCtx = document.getElementById('price-chart').getContext('2d');
+
+const pnlChart = new Chart(pnlCtx, {
+  type: 'line',
+  data: { labels: [], datasets: [{
+    label: 'P&L $',
+    data: [], borderColor: '#3fb950', backgroundColor: 'rgba(63,185,80,.1)',
+    fill: true, tension: .3, pointRadius: 3,
+  }]},
+  options: { responsive:true, plugins:{legend:{display:false}},
+    scales:{ y:{ grid:{color:'#21262d'}, ticks:{color:'#8b949e'} },
+             x:{ grid:{color:'#21262d'}, ticks:{color:'#8b949e', maxTicksLimit:8} } } }
+});
+
+const priceChart = new Chart(priceCtx, {
+  type: 'line',
+  data: { labels: [], datasets: [
+    { label:'UP ask',   data:[], borderColor:'#3fb950', tension:.2, pointRadius:0 },
+    { label:'DOWN ask', data:[], borderColor:'#f85149', tension:.2, pointRadius:0 },
+  ]},
+  options: { responsive:true,
+    plugins:{legend:{labels:{color:'#8b949e'}}},
+    scales:{ y:{ min:0, max:1, grid:{color:'#21262d'}, ticks:{color:'#8b949e'} },
+             x:{ grid:{color:'#21262d'}, ticks:{color:'#8b949e', maxTicksLimit:6} } } }
+});
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+const $ = id => document.getElementById(id);
+const fmt$ = v => v >= 0 ? `+$${v.toFixed(2)}` : `-$${Math.abs(v).toFixed(2)}`;
+const fmtColor = v => v >= 0 ? 'green' : 'red';
+
+function modeBadge(mode) {
+  const map = { arbitrage:'arb', directional:'dir', skip:'skip', offline:'off' };
+  return map[mode] || 'off';
+}
+
+// ── Fetch & render ────────────────────────────────────────────────────────────
+async function updateStatus() {
+  try {
+    const s = await fetch('/api/status').then(r => r.json());
+    const dot = $('status-dot');
+    const badge = $('mode-badge');
+
+    if (s.running) {
+      dot.className = 'dot on';
+      const m = s.mode || 'unknown';
+      badge.textContent = m.toUpperCase();
+      badge.className = `badge ${modeBadge(m)}`;
+    } else {
+      dot.className = 'dot off';
+      badge.textContent = 'OFFLINE';
+      badge.className = 'badge off';
+    }
+
+    $('kpi-btc').textContent = s.cl_now ? `$${Number(s.cl_now).toLocaleString('en',{minimumFractionDigits:2})}` : '—';
+    $('kpi-diff').textContent = s.cl_diff !== undefined ? `diff ventana: ${s.cl_diff >= 0 ? '+' : ''}$${Number(s.cl_diff).toFixed(2)}` : '—';
+    $('kpi-window').textContent = s.question ? s.question.replace('Bitcoin Up or Down - ','') : '—';
+    $('kpi-time-left').textContent = s.secs_left ? `${Math.floor(s.secs_left/60)}m ${s.secs_left%60|0}s restantes` : '—';
+    $('last-update').textContent = `actualizado ${new Date().toLocaleTimeString()}`;
+  } catch(e) {}
+}
+
+async function updateBrain() {
+  try {
+    const b = await fetch('/api/brain').then(r => r.json());
+    $('kpi-wr').textContent = b.win_rate !== undefined ? `${b.win_rate}%` : '—';
+    $('kpi-wr').className = `val ${b.win_rate >= 55 ? 'green' : b.win_rate >= 45 ? 'yellow' : 'red'}`;
+    $('kpi-wr-sub').textContent = `${b.wins}/${b.total} ops | ult.20: ${b.recent_20}%`;
+    $('kpi-thr').textContent = b.threshold ? `${b.threshold}%` : '—';
+    $('kpi-vol').textContent = b.vol ? `vol $${b.vol}/s` : '—';
+  } catch(e) {}
+}
+
+async function updateResults() {
+  try {
+    const rows = await fetch('/api/results').then(r => r.json());
+    const today = new Date().toISOString().slice(0,10);
+    const todayRows = rows.filter(r => r.timestamp_utc && r.timestamp_utc.startsWith(today));
+
+    // KPIs
+    const lastRow = rows[rows.length - 1];
+    if (lastRow) {
+      const pnl = parseFloat(lastRow.total_profit || 0);
+      const inv = rows.reduce((a,r) => {
+        const f = (r.up_filled==='True'?1:0) + (r.down_filled==='True'?1:0);
+        return a + f;
+      }, 0);
+      $('kpi-pnl').textContent = fmt$(pnl);
+      $('kpi-pnl').className = `val ${fmtColor(pnl)}`;
+      $('kpi-roi').textContent = inv ? `ROI: ${(pnl/inv*100).toFixed(1)}%` : 'ROI: —';
+
+      const modes = todayRows.reduce((a,r) => {
+        const m = r.mode || '?';
+        a[m] = (a[m]||0)+1; return a;
+      }, {});
+      $('kpi-cycles').textContent = todayRows.length;
+      $('kpi-modes').textContent = `arb:${modes.arbitrage||0} dir:${modes.directional||0} skip:${modes.skip||0}`;
+    }
+
+    // P&L chart
+    const resolved = rows.filter(r => r.winner && r.winner !== 'pending');
+    pnlChart.data.labels   = resolved.map(r => r.window_end_et || '');
+    pnlChart.data.datasets[0].data = resolved.map(r => parseFloat(r.total_profit||0));
+    pnlChart.update('none');
+
+    // Table (reverse, most recent first)
+    const tbody = $('results-body');
+    tbody.innerHTML = '';
+    [...rows].reverse().slice(0,50).forEach(r => {
+      const pnl = parseFloat(r.profit || 0);
+      const upF = r.up_filled==='True', dnF = r.down_filled==='True';
+      let fills;
+      if (upF || dnF) {
+        // Posición mantenida a resolución
+        fills = [
+          upF ? '<span class="pill up">UP</span>'   : '',
+          dnF ? '<span class="pill down">DOWN</span>' : '',
+        ].filter(Boolean).join(' ');
+      } else if (Math.abs(pnl) > 0.001) {
+        // Entró pero vendió antes del cierre (corte de pérdida)
+        fills = '<span class="pill skip">EXIT</span>';
+      } else {
+        // Nunca entró (skip / sin oportunidad)
+        fills = '—';
+      }
+      const winnerPill = r.winner === 'Up'    ? '<span class="pill win">Up</span>'
+                       : r.winner === 'Down'  ? '<span class="pill down">Down</span>'
+                       : '<span class="pill pend">pending</span>';
+      const pnlStr = r.winner === 'pending' ? '—'
+                   : `<span class="${fmtColor(pnl)}">${fmt$(pnl)}</span>`;
+
+      tbody.innerHTML += `<tr>
+        <td>${r.window_end_et || r.question?.split('- ').pop() || '—'}</td>
+        <td>${r.up_ask_open || '—'}</td>
+        <td>${r.down_ask_open || '—'}</td>
+        <td>${r.up_ask_close || '—'}</td>
+        <td>${r.down_ask_close || '—'}</td>
+        <td>${fills}</td>
+        <td>${winnerPill}</td>
+        <td>${pnlStr}</td>
+        <td class="${fmtColor(parseFloat(r.total_profit||0))}">${fmt$(parseFloat(r.total_profit||0))}</td>
+      </tr>`;
+    });
+  } catch(e) {}
+}
+
+async function updatePrices() {
+  try {
+    const rows = await fetch('/api/prices/current').then(r => r.json());
+    if (!rows.length) return;
+    priceChart.data.labels = rows.map(r => {
+      const s = parseFloat(r.seconds_elapsed||0);
+      return `${Math.floor(s/60)}:${String(s%60|0).padStart(2,'0')}`;
+    });
+    priceChart.data.datasets[0].data = rows.map(r => parseFloat(r.up_ask||0));
+    priceChart.data.datasets[1].data = rows.map(r => parseFloat(r.down_ask||0));
+    priceChart.update('none');
+  } catch(e) {}
+}
+
+async function updateTraining() {
+  try {
+    const t = await fetch('/api/training').then(r => r.json());
+    const wrColor = wr => wr === null ? 'var(--muted)' :
+                          wr >= 55 ? 'var(--green)' : wr >= 50 ? 'var(--yellow)' : 'var(--red)';
+
+    // Barra de progreso hacia decisión (40 ops)
+    const pct = Math.min(Math.round((t.d_total||0) / 40 * 100), 100);
+    $('dir-progress-fill').style.width = `${pct}%`;
+    $('dir-progress-pct').textContent = `${pct}%`;
+
+    if (t.ops_to_decide > 0) {
+      const adapt = t.ops_to_adapt > 0 ? `${t.ops_to_adapt} para auto-ajuste del threshold, ` : 'threshold ya activo, ';
+      $('dir-eta').textContent =
+        `${t.d_total} ops. Faltan ${adapt}${t.ops_to_decide} para veredicto (>55% = edge real, ~50% = ruido).`;
+    } else {
+      $('dir-eta').textContent = `${t.d_total} ops — muestra suficiente para juzgar el edge.`;
+    }
+
+    $('dir-ops').textContent = t.d_total || 0;
+    $('dir-wr').textContent  = t.d_win_rate === null ? '—' : `${t.d_win_rate}%`;
+    $('dir-wr').style.color  = wrColor(t.d_win_rate);
+    const pnl = t.d_pnl || 0;
+    $('dir-pnl').textContent = pnl >= 0 ? `+$${pnl.toFixed(2)}` : `-$${Math.abs(pnl).toFixed(2)}`;
+    $('dir-pnl').style.color = pnl >= 0 ? 'var(--green)' : 'var(--red)';
+
+    // Tabla por lado (UP vs DOWN)
+    const sb = $('side-body');
+    sb.innerHTML = '';
+    [['UP', t.up_count, t.up_win_rate], ['DOWN', t.down_count, t.down_win_rate]].forEach(([side, n, wr]) => {
+      const wrStr = wr === null ? '—' : `<span style="color:${wrColor(wr)}">${wr}%</span>`;
+      sb.innerHTML += `<tr><td><span class="pill ${side==='UP'?'up':'down'}">${side}</span></td><td>${n||0}</td><td>${wrStr}</td></tr>`;
+    });
+
+    // Nota de sesgo / régimen
+    const up = t.up_count||0, dn = t.down_count||0, tot = up+dn;
+    if (tot >= 4) {
+      const skew = Math.max(up, dn) / tot;
+      if (skew >= 0.75) {
+        const side = up > dn ? 'UP' : 'DOWN';
+        $('bias-note').innerHTML =
+          `<span style="color:var(--yellow)">⚠ Sesgo fuerte hacia ${side} (${Math.round(skew*100)}%).</span> ` +
+          `Puede ser seguir tendencia, no edge real. Vigila si gana también en el otro lado.`;
+      } else {
+        $('bias-note').innerHTML =
+          `<span style="color:var(--green)">Entradas balanceadas UP/DOWN</span> — si gana en ambos lados, el edge es más creíble.`;
+      }
+    } else {
+      $('bias-note').textContent = 'Pocas ops aún para evaluar sesgo.';
+    }
+
+    $('arb-ref').textContent = t.arb_total
+      ? `${t.arb_double_rate}% doble fill en ${t.arb_total} intentos (muerto)` : 'sin datos';
+  } catch(e) {}
+}
+
+// ── Loop de actualización ─────────────────────────────────────────────────────
+async function refresh() {
+  await Promise.all([updateStatus(), updateBrain(), updateResults(), updatePrices(), updateTraining()]);
+}
+
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>
