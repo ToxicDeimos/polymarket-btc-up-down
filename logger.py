@@ -37,6 +37,7 @@ def ensure_files():
                 "up_ask_open", "down_ask_open",
                 "up_ask_close", "down_ask_close",
                 "up_filled", "down_filled",
+                "up_fill_price", "down_fill_price",
                 "winner", "profit", "total_profit",
                 "minutes_active",
             ])
@@ -79,10 +80,12 @@ def log_cycle_result(condition_id, question,
                      minutes_active,
                      winner: str = "pending",
                      mode: str = "",
-                     profit: float = 0.0) -> str:
+                     profit: float = 0.0,
+                     up_fill_price=None, down_fill_price=None) -> str:
     """
     Guarda el resumen de la ventana en results.csv.
-    El winner se determina externamente (precio BTC apertura vs cierre).
+    Incluye el precio REAL de entrada (fill_price) para poder recalcular el
+    P&L con exactitud si el ganador se resuelve más tarde.
     """
 
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
@@ -128,6 +131,7 @@ def log_cycle_result(condition_id, question,
             up_ask_open, down_ask_open,
             up_ask_close, down_ask_close,
             up_filled, down_filled,
+            up_fill_price, down_fill_price,
             winner, round(profit, 2), running_total,
             round(minutes_active, 1),
         ])
@@ -162,14 +166,25 @@ def resolve_pending() -> list[dict]:
         winner = get_official_winner(row.get("condition_id", ""))
         if winner != "pending":
             row["winner"] = winner
+            # Recalcular P&L EXACTO desde el precio real de entrada guardado
+            row["profit"] = _profit_from_fills(row, winner)
             resolved.append(row)
 
     if resolved:
         fieldnames = list(rows[0].keys())
-        resolved_map = {r["condition_id"]: r["winner"] for r in resolved}
+        resolved_map = {r["condition_id"]: (r["winner"], r["profit"]) for r in resolved}
         for row in rows:
             if row["condition_id"] in resolved_map:
-                row["winner"] = resolved_map[row["condition_id"]]
+                row["winner"], row["profit"] = resolved_map[row["condition_id"]]
+
+        # Recalcular acumulado en orden
+        total = 0.0
+        for row in rows:
+            try:
+                total += float(row.get("profit") or 0)
+            except (ValueError, TypeError):
+                pass
+            row["total_profit"] = round(total, 2)
 
         with open(RESULTS_FILE, "w", newline="", encoding="utf-8") as f:
             w = csv.DictWriter(f, fieldnames=fieldnames)
@@ -179,6 +194,20 @@ def resolve_pending() -> list[dict]:
         print(f"  [Logger] {len(resolved)}/{len(pending)} ventanas resueltas")
 
     return resolved
+
+
+def _profit_from_fills(row: dict, winner: str) -> float:
+    """P&L exacto desde el precio real de entrada (fill_price)."""
+    profit = 0.0
+    for side, won_side in (("up", "Up"), ("down", "Down")):
+        if row.get(f"{side}_filled") == "True":
+            try:
+                fp = float(row.get(f"{side}_fill_price") or 0)
+            except (ValueError, TypeError):
+                fp = 0
+            if fp > 0:
+                profit += (1.0 / fp - 1.0) if winner == won_side else -1.0
+    return round(profit, 2)
 
 
 def _infer_winner_from_prices(row: dict) -> str:

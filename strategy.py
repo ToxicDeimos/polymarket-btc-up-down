@@ -158,6 +158,7 @@ def run():
                 up_ask_open=state.up_ask_open, down_ask_open=state.down_ask_open,
                 up_ask_close=state.up_ask_close, down_ask_close=state.down_ask_close,
                 up_filled=state.up_filled, down_filled=state.down_filled,
+                up_fill_price=state.up_fill_price, down_fill_price=state.down_fill_price,
                 minutes_active=state.minutes_active, winner="pending",
                 mode=state.mode, profit=0.0)
             time.sleep(2)
@@ -183,6 +184,8 @@ def run():
             down_ask_close = state.down_ask_close,
             up_filled      = state.up_filled,
             down_filled    = state.down_filled,
+            up_fill_price  = state.up_fill_price,
+            down_fill_price = state.down_fill_price,
             minutes_active = state.minutes_active,
             winner         = winner,
             mode           = state.mode,
