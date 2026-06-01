@@ -13,6 +13,7 @@ import json
 import os
 import requests
 from datetime import datetime, timezone
+from config import CLOB_HOST
 
 PRICES_FILE  = os.path.join(os.path.dirname(__file__), "prices.csv")
 RESULTS_FILE = os.path.join(os.path.dirname(__file__), "results.csv")
@@ -157,10 +158,8 @@ def resolve_pending() -> list[dict]:
     resolved = []
 
     for row in pending:
-        winner = _infer_winner_from_prices(row)
-        if winner == "pending":
-            # Fallback: intentar API (puede estar resuelta ya si han pasado horas)
-            winner = _get_winner(row.get("condition_id", ""))
+        # Fuente de verdad: resolución oficial de Polymarket (no precios locales).
+        winner = get_official_winner(row.get("condition_id", ""))
         if winner != "pending":
             row["winner"] = winner
             resolved.append(row)
@@ -224,34 +223,33 @@ def _poll_winner(condition_id: str, attempts: int = 8, wait_secs: int = 30) -> s
     return "pending"
 
 
-def _get_winner(condition_id: str) -> str:
-    """Consulta la API Gamma para ver si el mercado resolvió."""
+def get_official_winner(condition_id: str) -> str:
+    """
+    Ganador OFICIAL de Polymarket vía CLOB API (por condition_id).
+    El endpoint devuelve cada token con un flag `winner` booleano — la fuente
+    de verdad definitiva. Funciona tanto justo tras el cierre como días después.
+
+    NO determinar el ganador con lecturas propias de Chainlink: el bot cierra
+    unos segundos antes y se pierde movimientos de último segundo (ej. la
+    ventana 1:15-1:30 resolvió Up mientras nuestra lectura decía Down).
+
+    Retorna "Up" | "Down" | "pending".
+    """
     if not condition_id:
         return "pending"
     try:
-        resp = requests.get(
-            "https://gamma-api.polymarket.com/markets",
-            params={"conditionId": condition_id},
-            timeout=8,
-        )
-        if not resp.ok or not resp.json():
-            return "pending"
-
-        m = resp.json()[0]
-        if not m.get("closed", False):
-            return "pending"
-
-        prices_raw   = m.get("outcomePrices", "[]")
-        outcomes_raw = m.get("outcomes", "[]")
-        prices   = json.loads(prices_raw)   if isinstance(prices_raw,   str) else prices_raw
-        outcomes = json.loads(outcomes_raw) if isinstance(outcomes_raw, str) else outcomes_raw
-
-        for outcome, price in zip(outcomes, prices):
-            if float(price) >= 0.99:
-                return outcome   # "Up" o "Down"
+        r = requests.get(f"{CLOB_HOST}/markets/{condition_id}", timeout=8)
+        if r.ok:
+            for t in r.json().get("tokens", []):
+                if t.get("winner") is True:
+                    return t.get("outcome")   # "Up" o "Down"
     except Exception:
         pass
-    return "pending"
+    return "pending"   # aún no resuelto
+
+
+# Alias interno usado por resolve_pending
+_get_winner = get_official_winner
 
 
 # ── Helpers de libro de órdenes ───────────────────────────────────────────────

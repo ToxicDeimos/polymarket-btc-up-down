@@ -23,7 +23,8 @@ from market import get_active_btc_market
 from executor import build_client, place_limit_order, cancel_order, get_open_orders
 from data_feed import get_chainlink_price, get_btc_spot
 from brain import Brain, Signal
-from logger import ensure_files, log_price_snapshot, log_cycle_result, resolve_pending
+from logger import (ensure_files, log_price_snapshot, log_cycle_result,
+                    resolve_pending, get_official_winner)
 from config import POLL_INTERVAL, ORDER_SIZE_USDC, DRY_RUN, CLOB_HOST
 
 # Movimiento spot mínimo en la apertura para vigilar la ventana (si no, skip)
@@ -134,14 +135,12 @@ def run():
             print(f"  Ventana saltada — sin precios/señal")
         state = _monitor(client, state, brain, active=active)
 
-        # ── Ganador por Chainlink (fuente oficial) ────────────────────────────
-        cl_close = get_chainlink_price() or state.cl_open
-        winner   = "Up" if cl_close >= state.cl_open else "Down"
-        diff     = cl_close - state.cl_open
-
-        state.profit = _compute_profit(state, winner)
+        # ── Ganador OFICIAL de Polymarket (única fuente fiable) ───────────────
+        # NO determinar con Chainlink propio: el bot cierra unos segundos antes
+        # y se pierde movimientos de último segundo (ej. 1:15-1:30 resolvió Up
+        # mientras nuestra lectura decía Down). Esperamos la resolución oficial.
         fills = sum([state.up_filled, state.down_filled])
-        total_invested += ORDER_SIZE_USDC * fills
+        winner = _resolve_official_winner(state.condition_id)
 
         if fills == 1:
             side = "UP" if state.up_filled else "DOWN"
@@ -149,11 +148,28 @@ def run():
         else:
             tag = "Sin entrada"
 
+        if winner == "pending":
+            # No se pudo resolver tras los reintentos → se marca pendiente.
+            # resolve_pending() lo arreglará en un ciclo posterior.
+            print(f"\n  {tag}")
+            print(f"  Resolución oficial no disponible → PENDIENTE (no se aprende)")
+            log_cycle_result(
+                condition_id=state.condition_id, question=state.question,
+                up_ask_open=state.up_ask_open, down_ask_open=state.down_ask_open,
+                up_ask_close=state.up_ask_close, down_ask_close=state.down_ask_close,
+                up_filled=state.up_filled, down_filled=state.down_filled,
+                minutes_active=state.minutes_active, winner="pending",
+                mode=state.mode, profit=0.0)
+            time.sleep(2)
+            continue
+
+        state.profit = _compute_profit(state, winner)
+        total_invested += ORDER_SIZE_USDC * fills
         total_profit += state.profit
         roi = total_profit / total_invested * 100 if total_invested else 0.0
 
         print(f"\n  {tag}")
-        print(f"  CL cierre: ${cl_close:,.2f} ({diff:+.2f}) → {winner} gana")
+        print(f"  Resolución oficial: {winner} gana")
         print(f"  Profit ciclo: ${state.profit:+.2f}")
         print(f"  Total     : profit=${total_profit:+.2f} | ROI={roi:.1f}%")
         print(f"  Stats     : dir={stats['directional']} | skip={stats['skip']}")
@@ -288,6 +304,25 @@ def _write_status(state: CycleState, cl_now: float, cl_diff: float,
             json.dump(data, f)
     except Exception:
         pass
+
+
+def _resolve_official_winner(condition_id: str,
+                             attempts: int = 8, wait: int = 12) -> str:
+    """
+    Espera la resolución oficial de Polymarket tras el cierre (~30-90s).
+    Reintenta hasta `attempts` veces. Retorna "Up"/"Down" o "pending".
+    """
+    for i in range(attempts):
+        w = get_official_winner(condition_id)
+        if w != "pending":
+            if i > 0:
+                print(f"\n  Resuelto en intento {i+1}")
+            return w
+        if i < attempts - 1:
+            print(f"  Esperando resolución oficial… ({i+1}/{attempts})",
+                  end="\r", flush=True)
+            time.sleep(wait)
+    return "pending"
 
 
 def _mark_fill(state: CycleState, sig: Signal) -> None:
