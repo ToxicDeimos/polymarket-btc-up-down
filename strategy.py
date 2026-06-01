@@ -88,10 +88,6 @@ def run():
 
     ensure_files()
 
-    resolved = resolve_pending()
-    for row in resolved:
-        print(f"  Resuelto: {row['window_end_et']} -> {row['winner']}")
-
     total_invested = 0.0
     total_profit   = 0.0
     stats = {"directional": 0, "skip": 0}
@@ -102,6 +98,12 @@ def run():
         cycle += 1
         print(f"\n{'─'*62}")
         print(f"  Ciclo #{cycle}  {_now()}")
+
+        # Resolver pendientes de ciclos anteriores (la resolución oficial puede
+        # tardar más de los ~90s del poll; aquí se recogen los rezagados).
+        resolved = resolve_pending()
+        for row in resolved:
+            print(f"  Resuelto pendiente: {row['window_end_et']} -> {row['winner']}")
 
         market = _wait_for_market(seen)
         seen.add(market["condition_id"])
