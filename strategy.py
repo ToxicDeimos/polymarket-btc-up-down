@@ -207,6 +207,7 @@ def _monitor(client, state: CycleState, brain: Brain, active: bool) -> CycleStat
     last_up  = state.up_ask_open
     last_dn  = state.down_ask_open
     entered  = False   # ya apostamos un lado esta ventana
+    resolved_prev = False   # ya resolvimos la pendiente anterior esta ventana
 
     while True:
         now          = datetime.now(timezone.utc)
@@ -216,6 +217,13 @@ def _monitor(client, state: CycleState, brain: Brain, active: bool) -> CycleStat
         if secs_left <= 0:
             print("\n  Ventana cerrada.")
             break
+
+        # A ~2.5 min de la ventana, la anterior ya convergió en Polymarket:
+        # resolvemos su pendiente aquí para no esperar al siguiente ciclo.
+        if not resolved_prev and secs_elapsed > 150:
+            resolved_prev = True
+            for row in resolve_pending():
+                print(f"\n  Resuelto pendiente: {row['window_end_et']} -> {row['winner']}")
 
         cl_now   = get_chainlink_price() or state.cl_open
         spot_now = get_btc_spot()        or state.spot_open
