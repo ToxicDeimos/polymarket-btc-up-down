@@ -154,7 +154,11 @@ def resolve_pending() -> list[dict]:
     with open(RESULTS_FILE, "r", newline="", encoding="utf-8") as f:
         rows = list(csv.DictReader(f))
 
-    pending = [r for r in rows if r.get("winner") == "pending"]
+    # Solo resolver ventanas cerradas hace >=120s: justo tras el cierre el precio
+    # oscila (BTC cerca del target) y puede mostrar el lado equivocado transitoriamente.
+    # A los 2 min ya está asentado en la resolución real.
+    pending = [r for r in rows
+               if r.get("winner") == "pending" and _settled(r)]
     if not pending:
         return []
 
@@ -250,6 +254,16 @@ def _poll_winner(condition_id: str, attempts: int = 8, wait_secs: int = 30) -> s
             time.sleep(wait_secs)
     print()
     return "pending"
+
+
+def _settled(row: dict, min_secs: int = 120) -> bool:
+    """True si la ventana cerró hace >= min_secs (precio ya asentado, no volátil)."""
+    try:
+        ts = datetime.strptime(row.get("timestamp_utc", ""), "%Y-%m-%d %H:%M:%S")
+        ts = ts.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - ts).total_seconds() >= min_secs
+    except Exception:
+        return True   # sin timestamp fiable → no bloquear
 
 
 def get_official_winner(condition_id: str) -> str:

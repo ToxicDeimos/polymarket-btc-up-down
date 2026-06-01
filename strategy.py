@@ -24,7 +24,7 @@ from executor import build_client, place_limit_order, cancel_order, get_open_ord
 from data_feed import get_chainlink_price, get_btc_spot
 from brain import Brain, Signal
 from logger import (ensure_files, log_price_snapshot, log_cycle_result,
-                    resolve_pending, get_official_winner)
+                    resolve_pending)
 from config import POLL_INTERVAL, ORDER_SIZE_USDC, DRY_RUN, CLOB_HOST
 
 # Movimiento spot mínimo en la apertura para vigilar la ventana (si no, skip)
@@ -93,17 +93,15 @@ def run():
     stats = {"directional": 0, "skip": 0}
     cycle = 0
     seen: set = set()
+    pending_learn: dict = {}   # condition_id -> CycleState (signals para el Brain)
 
     while True:
         cycle += 1
         print(f"\n{'─'*62}")
         print(f"  Ciclo #{cycle}  {_now()}")
 
-        # Resolver pendientes de ciclos anteriores (la resolución oficial puede
-        # tardar más de los ~90s del poll; aquí se recogen los rezagados).
-        resolved = resolve_pending()
-        for row in resolved:
-            print(f"  Resuelto pendiente: {row['window_end_et']} -> {row['winner']}")
+        # Resolver pendientes ya asentadas (>=2min) y alimentar al Brain
+        _resolve_and_learn(brain, pending_learn)
 
         market = _wait_for_market(seen)
         seen.add(market["condition_id"])
@@ -135,72 +133,41 @@ def run():
         stats[state.mode] += 1
         if not active:
             print(f"  Ventana saltada — sin precios/señal")
-        state = _monitor(client, state, brain, active=active)
+        state = _monitor(client, state, brain, active=active,
+                         pending_learn=pending_learn)
 
-        # ── Ganador OFICIAL de Polymarket (única fuente fiable) ───────────────
-        # NO determinar con Chainlink propio: el bot cierra unos segundos antes
-        # y se pierde movimientos de último segundo (ej. 1:15-1:30 resolvió Up
-        # mientras nuestra lectura decía Down). Esperamos la resolución oficial.
+        # ── Al cierre NO se resuelve (el precio aún oscila) ───────────────────
+        # Se guarda como pending y se deja el state para aprender cuando el
+        # precio se asiente (~2 min). La resolución la hace _resolve_and_learn,
+        # que se llama al inicio del ciclo y a mitad de la ventana siguiente.
         fills = sum([state.up_filled, state.down_filled])
-        winner = _resolve_official_winner(state.condition_id)
-
         if fills == 1:
             side = "UP" if state.up_filled else "DOWN"
-            tag  = f"{side} apostado @ {state.up_fill_price or state.down_fill_price:.2f}"
+            print(f"\n  {side} apostado @ "
+                  f"{state.up_fill_price or state.down_fill_price:.2f} — pendiente de resolución")
         else:
-            tag = "Sin entrada"
-
-        if winner == "pending":
-            # No se pudo resolver tras los reintentos → se marca pendiente.
-            # resolve_pending() lo arreglará en un ciclo posterior.
-            print(f"\n  {tag}")
-            print(f"  Resolución oficial no disponible → PENDIENTE (no se aprende)")
-            log_cycle_result(
-                condition_id=state.condition_id, question=state.question,
-                up_ask_open=state.up_ask_open, down_ask_open=state.down_ask_open,
-                up_ask_close=state.up_ask_close, down_ask_close=state.down_ask_close,
-                up_filled=state.up_filled, down_filled=state.down_filled,
-                up_fill_price=state.up_fill_price, down_fill_price=state.down_fill_price,
-                minutes_active=state.minutes_active, winner="pending",
-                mode=state.mode, profit=0.0)
-            time.sleep(2)
-            continue
-
-        state.profit = _compute_profit(state, winner)
-        total_invested += ORDER_SIZE_USDC * fills
-        total_profit += state.profit
-        roi = total_profit / total_invested * 100 if total_invested else 0.0
-
-        print(f"\n  {tag}")
-        print(f"  Resolución oficial: {winner} gana")
-        print(f"  Profit ciclo: ${state.profit:+.2f}")
-        print(f"  Total     : profit=${total_profit:+.2f} | ROI={roi:.1f}%")
-        print(f"  Stats     : dir={stats['directional']} | skip={stats['skip']}")
+            print(f"\n  Sin entrada")
 
         log_cycle_result(
-            condition_id   = state.condition_id,
-            question       = state.question,
-            up_ask_open    = state.up_ask_open,
-            down_ask_open  = state.down_ask_open,
-            up_ask_close   = state.up_ask_close,
-            down_ask_close = state.down_ask_close,
-            up_filled      = state.up_filled,
-            down_filled    = state.down_filled,
-            up_fill_price  = state.up_fill_price,
-            down_fill_price = state.down_fill_price,
-            minutes_active = state.minutes_active,
-            winner         = winner,
-            mode           = state.mode,
-            profit         = state.profit,
-        )
-        brain.record_outcome(winner, state.signals)
+            condition_id=state.condition_id, question=state.question,
+            up_ask_open=state.up_ask_open, down_ask_open=state.down_ask_open,
+            up_ask_close=state.up_ask_close, down_ask_close=state.down_ask_close,
+            up_filled=state.up_filled, down_filled=state.down_filled,
+            up_fill_price=state.up_fill_price, down_fill_price=state.down_fill_price,
+            minutes_active=state.minutes_active, winner="pending",
+            mode=state.mode, profit=0.0)
+
+        # Guardar para aprender cuando se resuelva (lleva los signals en memoria)
+        if state.signals:
+            pending_learn[state.condition_id] = state
 
         time.sleep(2)
 
 
 # ── Monitor de ventana ────────────────────────────────────────────────────────
 
-def _monitor(client, state: CycleState, brain: Brain, active: bool) -> CycleState:
+def _monitor(client, state: CycleState, brain: Brain, active: bool,
+             pending_learn: dict | None = None) -> CycleState:
     """Polling cada POLL_INTERVAL s. active=False → solo recopila datos."""
     end          = datetime.fromisoformat(state.end_date.replace("Z", "+00:00"))
     window_start = datetime.now(timezone.utc)
@@ -218,12 +185,11 @@ def _monitor(client, state: CycleState, brain: Brain, active: bool) -> CycleStat
             print("\n  Ventana cerrada.")
             break
 
-        # A ~2.5 min de la ventana, la anterior ya convergió en Polymarket:
-        # resolvemos su pendiente aquí para no esperar al siguiente ciclo.
+        # A ~2.5 min de la ventana, la anterior ya se asentó en Polymarket:
+        # resolvemos y aprendemos aquí para no esperar al siguiente ciclo.
         if not resolved_prev and secs_elapsed > 150:
             resolved_prev = True
-            for row in resolve_pending():
-                print(f"\n  Resuelto pendiente: {row['window_end_et']} -> {row['winner']}")
+            _resolve_and_learn(brain, pending_learn if pending_learn is not None else {})
 
         cl_now   = get_chainlink_price() or state.cl_open
         spot_now = get_btc_spot()        or state.spot_open
@@ -319,23 +285,21 @@ def _write_status(state: CycleState, cl_now: float, cl_diff: float,
         pass
 
 
-def _resolve_official_winner(condition_id: str,
-                             attempts: int = 8, wait: int = 12) -> str:
+def _resolve_and_learn(brain: Brain, pending_learn: dict) -> None:
     """
-    Espera la resolución oficial de Polymarket tras el cierre (~30-90s).
-    Reintenta hasta `attempts` veces. Retorna "Up"/"Down" o "pending".
+    Resuelve las ventanas pendientes ya asentadas (>=2min tras cierre) actualizando
+    el CSV, y alimenta al Brain con las que aún tenemos signals en memoria.
+    Nunca resuelve durante el periodo volátil (lo garantiza resolve_pending).
     """
-    for i in range(attempts):
-        w = get_official_winner(condition_id)
-        if w != "pending":
-            if i > 0:
-                print(f"\n  Resuelto en intento {i+1}")
-            return w
-        if i < attempts - 1:
-            print(f"  Esperando resolución oficial… ({i+1}/{attempts})",
-                  end="\r", flush=True)
-            time.sleep(wait)
-    return "pending"
+    resolved = resolve_pending()
+    for row in resolved:
+        cid = row.get("condition_id", "")
+        winner = row.get("winner", "")
+        print(f"\n  Resuelto: {row['window_end_et']} -> {winner} | P&L {row.get('profit')}")
+        st = pending_learn.pop(cid, None)
+        if st is not None and winner in ("Up", "Down"):
+            brain.record_outcome(winner, st.signals)
+            print(f"  Brain aprendió de {row['window_end_et']} ({winner})")
 
 
 def _mark_fill(state: CycleState, sig: Signal) -> None:
