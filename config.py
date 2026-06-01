@@ -21,8 +21,9 @@ ORDER_SIZE_USDC = 1.0
 # True → simulación (no envía órdenes reales) | False → dinero real
 DRY_RUN = os.getenv("DRY_RUN", "true").lower() == "true"
 
-# Segundos entre polls del libro de órdenes
-POLL_INTERVAL = 15
+# Segundos entre polls. El edge es de lag (~10-30s): 5s lo captura bien sin
+# saturar la API. Debe ser igual en dry y real para que la medición sea fiel.
+POLL_INTERVAL = 5
 
 # Filtro de ventana: solo operar la que está en curso (3-25 min restantes)
 MIN_MINUTES_REMAINING = 3    # no abrir si quedan menos de 3 min
