@@ -2,7 +2,7 @@
 Coloca órdenes límite en Polymarket via py-clob-client.
 """
 from py_clob_client.client import ClobClient
-from py_clob_client.clob_types import OrderArgs, OrderType, ApiCreds
+from py_clob_client.clob_types import OrderArgs, OrderType, ApiCreds, MarketOrderArgs
 from py_clob_client.constants import POLYGON
 
 from config import (
@@ -54,6 +54,26 @@ def place_limit_order(client: ClobClient, token_id: str,
     print(f"  [{side_label}] Orden colocada — ID: {order_id} | "
           f"{size} shares @ {price} | coste: ${ORDER_SIZE_USDC}")
     return response
+
+
+def place_market_order(client: ClobClient, token_id: str,
+                       side_label: str, usdc: float) -> dict:
+    """
+    Orden de MERCADO de compra por `usdc` USDC (FOK: llena al instante caminando
+    el libro, o se cancela). Es lo que usa el bot en real para entrar al ask.
+    Retorna dict con avg_price del fill.
+    """
+    if DRY_RUN:
+        return {"dry_run": True}
+
+    order_args = MarketOrderArgs(token_id=token_id, amount=usdc, side="BUY")
+    signed = client.create_market_order(order_args)
+    resp = client.post_order(signed, OrderType.FOK)
+    # avg price = usdc / shares ejecutadas (si la API lo devuelve)
+    shares = float(resp.get("makingAmount") or resp.get("size") or 0)
+    avg = round(usdc / shares, 4) if shares else None
+    print(f"  [{side_label}] MARKET ${usdc} → avg {avg} | resp: {resp.get('status','?')}")
+    return {**resp, "avg_price": avg}
 
 
 def cancel_order(client: ClobClient, order_id: str) -> None:

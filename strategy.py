@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 import requests
 
 from market import get_active_btc_market
-from executor import build_client, place_limit_order, cancel_order, get_open_orders
+from executor import build_client, place_market_order
 from data_feed import get_chainlink_price, get_btc_spot
 from brain import Brain, Signal
 from logger import (ensure_files, log_price_snapshot, log_cycle_result,
@@ -29,6 +29,10 @@ from config import POLL_INTERVAL, ORDER_SIZE_USDC, DRY_RUN, CLOB_HOST
 
 # Movimiento spot mínimo en la apertura para vigilar la ventana (si no, skip)
 DIRECTIONAL_MOVE = 40.0
+
+# Latencia estimada de ejecución real (firma + envío de la orden al CLOB).
+# Se simula también en dry para que el fill refleje el precio ~2s después.
+EXEC_LATENCY_SECS = 2
 
 
 @dataclass
@@ -223,23 +227,30 @@ def _monitor(client, state: CycleState, brain: Brain, active: bool,
                 print(f"\n  [Brain/{sig.edge_type}] {sig.side.upper()} | "
                       f"P={sig.p_true:.0%} mercado={sig.market_price:.2f} "
                       f"edge={sig.edge:+.0%} | CL={cl_diff:+.0f}$ spot={spot_diff:+.0f}$")
-                if DRY_RUN:
-                    _mark_fill(state, sig)
-                else:
-                    token = state.up_token if sig.side == "up" else state.down_token
-                    r = place_limit_order(client, token, sig.side.upper(), sig.market_price)
-                    if sig.side == "up":
-                        state.up_order_id = r.get("orderID")
-                    else:
-                        state.down_order_id = r.get("orderID")
+                token = state.up_token if sig.side == "up" else state.down_token
 
-        # En modo real, confirmar fill del límite colocado
-        if active and not DRY_RUN and entered:
-            open_ids = {o["id"] for o in get_open_orders(client)}
-            if state.up_order_id and state.up_order_id not in open_ids and not state.up_filled:
-                state.up_filled = True
-            if state.down_order_id and state.down_order_id not in open_ids and not state.down_filled:
-                state.down_filled = True
+                # Latencia real de ejecución: firma+envío tardan ~EXEC_LATENCY s,
+                # durante los cuales el precio puede moverse. Lo simulamos también
+                # en dry para que el fill sea fiel a real.
+                time.sleep(EXEC_LATENCY_SECS)
+
+                if DRY_RUN:
+                    # Market order: caminamos el libro post-latencia → avg real
+                    avg = _simulate_market_fill(token, ORDER_SIZE_USDC) or sig.market_price
+                    slip = (avg - sig.market_price) * 100
+                    print(f"  [DRY] fill MERCADO @ {avg} "
+                          f"(ask señal {sig.market_price} | slippage {slip:+.1f}c)")
+                    if sig.side == "up":
+                        state.up_filled = True;  state.up_fill_price = avg
+                    else:
+                        state.down_filled = True; state.down_fill_price = avg
+                else:
+                    r = place_market_order(client, token, sig.side.upper(), ORDER_SIZE_USDC)
+                    fp = r.get("avg_price", sig.market_price)
+                    if sig.side == "up":
+                        state.up_filled = True;  state.up_fill_price = fp
+                    else:
+                        state.down_filled = True; state.down_fill_price = fp
 
         mode_ch = {"directional": "D", "skip": "S"}.get(state.mode, "?")
         print(f"  [{mode_ch}] {secs_left/60:4.1f}m | "
@@ -302,13 +313,28 @@ def _resolve_and_learn(brain: Brain, pending_learn: dict) -> None:
             print(f"  Brain aprendió de {row['window_end_et']} ({winner})")
 
 
-def _mark_fill(state: CycleState, sig: Signal) -> None:
-    if sig.side == "up":
-        state.up_filled     = True
-        state.up_fill_price = sig.market_price
-    else:
-        state.down_filled     = True
-        state.down_fill_price = sig.market_price
+def _simulate_market_fill(token_id: str, usdc: float) -> float | None:
+    """
+    Precio medio REAL de un market buy de `usdc` USDC, caminando el libro de asks
+    (nivel a nivel, del más barato al más caro) como haría una orden de mercado.
+    Captura el slippage real cuando el mejor nivel no tiene profundidad suficiente.
+    Retorna None si no hay liquidez para cubrir el importe.
+    """
+    asks = sorted(_get_book(token_id).get("asks", []), key=lambda x: float(x["price"]))
+    remaining = usdc
+    shares = 0.0
+    for a in asks:
+        price = float(a["price"]); size = float(a["size"])
+        cap = price * size                # USDC disponibles en este nivel
+        if remaining <= cap:
+            shares += remaining / price
+            remaining = 0.0
+            break
+        shares += size
+        remaining -= cap
+    if shares <= 0 or remaining > 0.001:
+        return None
+    return round(usdc / shares, 4)        # precio medio ponderado real
 
 
 def _wait_for_market(seen: set) -> dict:
