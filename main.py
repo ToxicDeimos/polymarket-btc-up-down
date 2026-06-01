@@ -1,8 +1,16 @@
 """
-Polymarket BTC Up/Down 15m — Arbitrage Bot
+Polymarket BTC Up/Down 15m — Bot direccional
 Uso: python main.py
 """
 import sys
+
+# Salida en UTF-8 siempre (evita crash con caracteres Unicode en consolas cp1252)
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+except Exception:
+    pass
+
 from strategy import run
 
 if __name__ == "__main__":
