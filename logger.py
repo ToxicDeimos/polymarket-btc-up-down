@@ -270,11 +270,15 @@ def get_official_winner(condition_id: str) -> str:
         r = requests.get(f"{CLOB_HOST}/markets/{condition_id}", timeout=8)
         if r.ok:
             for t in r.json().get("tokens", []):
-                if t.get("winner") is True:
+                # El flag `winner` es definitivo pero tarda mucho. El PRECIO del
+                # token converge a ~0.995 en pocos minutos tras el cierre — y como
+                # solo consultamos DESPUÉS del cierre, un precio ≥0.95 = resolución.
+                price = float(t.get("price") or 0)
+                if t.get("winner") is True or price >= 0.95:
                     return t.get("outcome")   # "Up" o "Down"
     except Exception:
         pass
-    return "pending"   # aún no resuelto
+    return "pending"   # aún no resuelto (precios sin converger)
 
 
 # Alias interno usado por resolve_pending
