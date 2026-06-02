@@ -160,14 +160,14 @@
         </div>
       </div>
 
-      <!-- Detección de sesgo / régimen -->
+      <!-- Rendimiento por régimen -->
       <div>
         <div class="price-label" style="margin-bottom:10px;">
-          ¿Edge real o seguir tendencia? — win rate por lado
+          Win rate por RÉGIMEN — ¿gana en subida Y bajada? (el bot apuesta con la tendencia)
         </div>
         <table style="width:100%;">
           <thead>
-            <tr><th>Lado</th><th>Entradas</th><th>Win rate</th></tr>
+            <tr><th>Régimen</th><th>Apuestas</th><th>Win rate</th></tr>
           </thead>
           <tbody id="side-body"></tbody>
         </table>
@@ -393,29 +393,31 @@ async function updateTraining() {
     $('dir-pnl').textContent = pnl >= 0 ? `+$${pnl.toFixed(2)}` : `-$${Math.abs(pnl).toFixed(2)}`;
     $('dir-pnl').style.color = pnl >= 0 ? 'var(--green)' : 'var(--red)';
 
-    // Tabla por lado (UP vs DOWN)
+    // El bot apuesta CON la tendencia → UP = subida, DOWN = bajada
     const sb = $('side-body');
     sb.innerHTML = '';
-    [['UP', t.up_count, t.up_win_rate], ['DOWN', t.down_count, t.down_win_rate]].forEach(([side, n, wr]) => {
+    [['Subida', 'up', t.up_count, t.up_win_rate],
+     ['Bajada', 'down', t.down_count, t.down_win_rate]].forEach(([label, cls, n, wr]) => {
       const wrStr = wr === null ? '—' : `<span style="color:${wrColor(wr)}">${wr}%</span>`;
-      sb.innerHTML += `<tr><td><span class="pill ${side==='UP'?'up':'down'}">${side}</span></td><td>${n||0}</td><td>${wrStr}</td></tr>`;
+      sb.innerHTML += `<tr><td><span class="pill ${cls}">${label}</span></td><td>${n||0}</td><td>${wrStr}</td></tr>`;
     });
 
-    // Nota de sesgo / régimen
-    const up = t.up_count||0, dn = t.down_count||0, tot = up+dn;
-    if (tot >= 4) {
-      const skew = Math.max(up, dn) / tot;
-      if (skew >= 0.75) {
-        const side = up > dn ? 'UP' : 'DOWN';
+    // Veredicto por régimen: ¿gana en AMBOS?
+    const upN = t.up_count||0, dnN = t.down_count||0;
+    const upWR = t.up_win_rate, dnWR = t.down_win_rate;
+    if (upN >= 5 && dnN >= 5) {
+      if (upWR >= 58 && dnWR >= 58) {
         $('bias-note').innerHTML =
-          `<span style="color:var(--yellow)">⚠ Sesgo fuerte hacia ${side} (${Math.round(skew*100)}%).</span> ` +
-          `Puede ser seguir tendencia, no edge real. Vigila si gana también en el otro lado.`;
+          `<span style="color:var(--green)">✓ Gana en AMBOS regímenes (subida ${upWR}% / bajada ${dnWR}%)</span> — edge de tendencia creíble.`;
       } else {
         $('bias-note').innerHTML =
-          `<span style="color:var(--green)">Entradas balanceadas UP/DOWN</span> — si gana en ambos lados, el edge es más creíble.`;
+          `<span style="color:var(--yellow)">⚠ Gana solo en un régimen (subida ${upWR}% / bajada ${dnWR}%)</span> — el edge no es simétrico aún.`;
       }
     } else {
-      $('bias-note').textContent = 'Pocas ops aún para evaluar sesgo.';
+      const falta = upN < 5 ? 'SUBIDA' : 'BAJADA';
+      $('bias-note').innerHTML =
+        `Faltan datos de <b>${falta}</b> (subida ${upN} / bajada ${dnN} ops). ` +
+        `El veredicto necesita ≥5 apuestas en cada régimen para saber si el edge es durable.`;
     }
   } catch(e) {}
 }
