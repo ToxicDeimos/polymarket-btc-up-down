@@ -108,6 +108,17 @@ def run():
 
     ensure_files()
 
+    # Reconstruir el aprendizaje del Brain desde el registro completo (CSV),
+    # para que no tenga huecos por reinicios y su threshold se ajuste con datos
+    # reales (no con un win rate inflado por las ops que perdió al reiniciar).
+    try:
+        import csv as _csv
+        with open(os.path.join(os.path.dirname(__file__), "results.csv"),
+                  encoding="utf-8") as _f:
+            brain.sync_from_results(list(_csv.DictReader(_f)))
+    except Exception:
+        pass
+
     total_invested = 0.0
     total_profit   = 0.0
     stats = {"directional": 0, "skip": 0}
@@ -347,7 +358,7 @@ def _resolve_and_learn(brain: Brain, pending_learn: dict) -> None:
         print(f"\n  Resuelto: {row['window_end_et']} -> {winner} | P&L {row.get('profit')}")
         st = pending_learn.pop(cid, None)
         if st is not None and winner in ("Up", "Down"):
-            brain.record_outcome(winner, st.signals)
+            brain.record_outcome(winner, st.signals, condition_id=cid)
             print(f"  Brain aprendió de {row['window_end_et']} ({winner})")
 
 

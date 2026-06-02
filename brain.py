@@ -50,10 +50,38 @@ class Brain:
         self.vol_per_sec: float  = 0.55    # σ BTC en $/segundo (se actualiza en vivo)
         self.edge_threshold: float = EDGE_THRESHOLD
         self.history: list[dict]   = []
+        self.learned_ids: set      = set()  # condition_ids ya en el historial (dedup)
         self._price_buf: list      = []    # (timestamp_rel, chainlink_price)
         self._load()
 
     # ── API pública ───────────────────────────────────────────────────────────
+
+    def sync_from_results(self, csv_rows: list[dict]) -> None:
+        """
+        Reconstruye el historial desde results.csv (registro COMPLETO de apuestas
+        resueltas). Esto evita los huecos por reinicio: el aprendizaje en memoria
+        (pending_learn) se pierde al reiniciar, pero el CSV lo tiene todo.
+        """
+        hist, ids = [], set()
+        for r in csv_rows:
+            if r.get("mode") != "directional":
+                continue
+            up = r.get("up_filled") == "True"
+            dn = r.get("down_filled") == "True"
+            if not (up or dn):
+                continue
+            winner = r.get("winner", "")
+            if winner not in ("Up", "Down"):
+                continue
+            side = "up" if up else "down"
+            won  = (side == "up" and winner == "Up") or (side == "down" and winner == "Down")
+            hist.append({"side": side, "won": won})
+            ids.add(r.get("condition_id", ""))
+        self.history = hist
+        self.learned_ids = ids
+        self._adapt()
+        self._save()
+        print(f"  [Brain] Sincronizado desde results.csv: {len(hist)} ops")
 
     def record_price(self, cl_price: float, secs_elapsed: float) -> None:
         """Registra precio Chainlink actual y actualiza volatilidad."""
@@ -99,20 +127,16 @@ class Brain:
 
         return signals
 
-    def record_outcome(self, winner: str, signals: list[Signal]) -> None:
-        """Registra resultado y adapta parámetros."""
+    def record_outcome(self, winner: str, signals: list[Signal],
+                       condition_id: str | None = None) -> None:
+        """Registra resultado y adapta. Dedup por condition_id (no recontar)."""
+        if condition_id and condition_id in self.learned_ids:
+            return   # ya contado (vía sync desde CSV o aprendizaje previo)
         for s in signals:
             won = s.side.lower() == winner.lower()
-            self.history.append({
-                "edge_type":    s.edge_type,
-                "side":         s.side,
-                "market_price": s.market_price,
-                "p_true":       s.p_true,
-                "edge":         s.edge,
-                "btc_diff":     s.btc_diff,
-                "won":          won,
-            })
-
+            self.history.append({"side": s.side, "won": won})
+        if condition_id:
+            self.learned_ids.add(condition_id)
         self._adapt()
         self._save()
 
@@ -252,6 +276,7 @@ class Brain:
                 self.vol_per_sec    = d.get("vol", self.vol_per_sec)
                 self.edge_threshold = d.get("threshold", self.edge_threshold)
                 self.history        = d.get("history", [])
+                self.learned_ids    = set(d.get("learned_ids", []))
                 print(f"  [Brain] Cargado: {len(self.history)} ops | "
                       f"threshold={self.edge_threshold:.0%} | "
                       f"vol=${self.vol_per_sec:.3f}/s")
@@ -261,7 +286,8 @@ class Brain:
     def _save(self) -> None:
         with open(STATS_FILE, "w", encoding="utf-8") as f:
             json.dump({
-                "vol":       round(self.vol_per_sec, 6),
-                "threshold": round(self.edge_threshold, 6),
-                "history":   self.history[-300:],
+                "vol":         round(self.vol_per_sec, 6),
+                "threshold":   round(self.edge_threshold, 6),
+                "history":     self.history[-300:],
+                "learned_ids": list(self.learned_ids)[-300:],
             }, f, indent=2)
