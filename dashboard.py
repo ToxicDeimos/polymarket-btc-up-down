@@ -170,4 +170,5 @@ def _recent_wr(history: list, n: int) -> float:
 
 if __name__ == "__main__":
     print("Dashboard corriendo en http://localhost:5000")
-    app.run(debug=False, port=5000, use_reloader=False)
+    # host 0.0.0.0 → accesible desde otros dispositivos de la red (móvil/PC)
+    app.run(host="0.0.0.0", debug=False, port=5000, use_reloader=False)
