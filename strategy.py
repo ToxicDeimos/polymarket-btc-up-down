@@ -25,7 +25,7 @@ from data_feed import get_chainlink_price, get_btc_spot, get_btc_trend
 from brain import Brain, Signal
 from logger import (ensure_files, log_price_snapshot, log_cycle_result,
                     resolve_pending)
-from config import POLL_INTERVAL, ORDER_SIZE_USDC, DRY_RUN, CLOB_HOST
+from config import POLL_INTERVAL, ORDER_SIZE_USDC, DRY_RUN, CLOB_HOST, TAKER_FEE_RATE
 
 # Movimiento spot mínimo en la apertura para vigilar la ventana (si no, skip)
 DIRECTIONAL_MOVE = 40.0
@@ -72,14 +72,19 @@ class CycleState:
 
 
 def _compute_profit(state: "CycleState", winner: str) -> float:
-    """P&L de la ventana según resolución de la posición (una sola, direccional)."""
+    """
+    P&L neto de la ventana = resolución de la posición − fee de taker.
+    La fee (market order) se paga al entrar: 0.07 × importe × (1 − precio_entrada).
+    """
     profit = 0.0
     if state.up_filled and state.up_fill_price:
         shares = ORDER_SIZE_USDC / state.up_fill_price
         profit += (shares - ORDER_SIZE_USDC) if winner == "Up" else -ORDER_SIZE_USDC
+        profit -= TAKER_FEE_RATE * ORDER_SIZE_USDC * (1 - state.up_fill_price)
     if state.down_filled and state.down_fill_price:
         shares = ORDER_SIZE_USDC / state.down_fill_price
         profit += (shares - ORDER_SIZE_USDC) if winner == "Down" else -ORDER_SIZE_USDC
+        profit -= TAKER_FEE_RATE * ORDER_SIZE_USDC * (1 - state.down_fill_price)
     return round(profit, 2)
 
 

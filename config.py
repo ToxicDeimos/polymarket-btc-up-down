@@ -21,6 +21,11 @@ ORDER_SIZE_USDC = 1.0
 # True → simulación (no envía órdenes reales) | False → dinero real
 DRY_RUN = os.getenv("DRY_RUN", "true").lower() == "true"
 
+# Fee de TAKER de Polymarket (órdenes de mercado, que es lo que usa el bot).
+# Crypto: fee = shares × 0.07 × p × (1-p)  →  para $1: 0.07 × (1-p) por trade.
+# Los makers pagan 0; nosotros somos takers (market FOK), así que pagamos esto.
+TAKER_FEE_RATE = 0.07
+
 # Segundos entre polls. El edge es de lag (~10-30s): 5s lo captura bien sin
 # saturar la API. Debe ser igual en dry y real para que la medición sea fiel.
 POLL_INTERVAL = 5

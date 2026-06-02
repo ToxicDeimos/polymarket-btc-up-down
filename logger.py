@@ -13,7 +13,7 @@ import json
 import os
 import requests
 from datetime import datetime, timezone
-from config import CLOB_HOST
+from config import CLOB_HOST, TAKER_FEE_RATE
 
 PRICES_FILE  = os.path.join(os.path.dirname(__file__), "prices.csv")
 RESULTS_FILE = os.path.join(os.path.dirname(__file__), "results.csv")
@@ -201,7 +201,7 @@ def resolve_pending() -> list[dict]:
 
 
 def _profit_from_fills(row: dict, winner: str) -> float:
-    """P&L exacto desde el precio real de entrada (fill_price)."""
+    """P&L NETO desde el precio real de entrada (fill_price), menos fee de taker."""
     profit = 0.0
     for side, won_side in (("up", "Up"), ("down", "Down")):
         if row.get(f"{side}_filled") == "True":
@@ -211,6 +211,7 @@ def _profit_from_fills(row: dict, winner: str) -> float:
                 fp = 0
             if fp > 0:
                 profit += (1.0 / fp - 1.0) if winner == won_side else -1.0
+                profit -= TAKER_FEE_RATE * 1.0 * (1 - fp)   # fee market order ($1)
     return round(profit, 2)
 
 
