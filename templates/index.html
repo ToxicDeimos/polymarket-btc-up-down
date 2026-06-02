@@ -267,11 +267,10 @@ async function updateStatus() {
 }
 
 async function updateBrain() {
+  // Solo threshold y vol (propiedades del Brain). El win rate va desde el CSV
+  // en updateTraining(), para que coincida con el panel (fuente única de verdad).
   try {
     const b = await fetch('/api/brain').then(r => r.json());
-    $('kpi-wr').textContent = b.win_rate !== undefined ? `${b.win_rate}%` : '—';
-    $('kpi-wr').className = `val ${b.win_rate >= 55 ? 'green' : b.win_rate >= 45 ? 'yellow' : 'red'}`;
-    $('kpi-wr-sub').textContent = `${b.wins}/${b.total} ops | ult.20: ${b.recent_20}%`;
     $('kpi-thr').textContent = b.threshold ? `${b.threshold}%` : '—';
     $('kpi-vol').textContent = b.vol ? `vol $${b.vol}/s` : '—';
   } catch(e) {}
@@ -389,6 +388,11 @@ async function updateTraining() {
     $('dir-ops').textContent = t.d_total || 0;
     $('dir-wr').textContent  = t.d_win_rate === null ? '—' : `${t.d_win_rate}%`;
     $('dir-wr').style.color  = wrColor(t.d_win_rate);
+
+    // KPI win rate (arriba) desde la MISMA fuente (CSV) para que coincida
+    $('kpi-wr').textContent = t.d_win_rate === null ? '—' : `${t.d_win_rate}%`;
+    $('kpi-wr').className = `val ${t.d_win_rate >= 55 ? 'green' : t.d_win_rate >= 45 ? 'yellow' : 'red'}`;
+    $('kpi-wr-sub').textContent = `${t.d_wins}/${t.d_total} ops | ult.20: ${t.d_recent20 ?? '—'}%`;
     const pnl = t.d_pnl || 0;
     $('dir-pnl').textContent = pnl >= 0 ? `+$${pnl.toFixed(2)}` : `-$${Math.abs(pnl).toFixed(2)}`;
     $('dir-pnl').style.color = pnl >= 0 ? 'var(--green)' : 'var(--red)';

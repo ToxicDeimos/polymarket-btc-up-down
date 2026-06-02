@@ -137,6 +137,7 @@ def api_training():
             "d_total":         d_total,
             "d_wins":          d_wins,
             "d_win_rate":      _wr(dir_ops),
+            "d_recent20":      _wr(dir_ops[-20:]),
             "d_pnl":           d_pnl,
             "up_count":        len(up_ops),
             "down_count":      len(down_ops),
