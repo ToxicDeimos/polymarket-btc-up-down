@@ -114,11 +114,16 @@ def _ema(values: list[float], period: int) -> float:
     return ema
 
 
-def get_btc_trend(fast: int = 7, slow: int = 25, interval: str = "15m") -> str | None:
+def get_btc_trend(fast: int = 7, slow: int = 25,
+                  interval: str = "15m") -> tuple[str | None, float]:
     """
     Tendencia dominante de BTC: cruce de EMAs sobre velas de Binance.
     Timeframe superior a la ventana (15m × EMA25 ≈ 6h) para filtrar rebotes.
-    Retorna "up" (EMA_fast > EMA_slow), "down", o None si falla.
+
+    Retorna (dirección, fuerza):
+      dirección = "up" (EMA_fast > EMA_slow) | "down" | None si falla
+      fuerza    = |EMA_fast - EMA_slow| / precio × 100  (% de separación)
+                  Grande = tendencia clara | ~0 = EMAs pegadas = lateral
     """
     try:
         resp = requests.get(
@@ -127,10 +132,14 @@ def get_btc_trend(fast: int = 7, slow: int = 25, interval: str = "15m") -> str |
             timeout=6,
         )
         if not resp.ok:
-            return None
+            return None, 0.0
         closes = [float(c[4]) for c in resp.json()]   # índice 4 = cierre
         if len(closes) < slow:
-            return None
-        return "up" if _ema(closes, fast) > _ema(closes, slow) else "down"
+            return None, 0.0
+        ef = _ema(closes, fast)
+        es = _ema(closes, slow)
+        direction = "up" if ef > es else "down"
+        strength  = abs(ef - es) / closes[-1] * 100
+        return direction, round(strength, 3)
     except Exception:
-        return None
+        return None, 0.0

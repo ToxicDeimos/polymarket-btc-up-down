@@ -38,6 +38,11 @@ EXEC_LATENCY_SECS = 2
 # Corta las apuestas contra-tendencia (rebotes) que son la mayor sangría.
 TREND_FILTER = True
 
+# Fuerza mínima de tendencia (% separación EMA) para operar. Por debajo = lateral,
+# donde la estrategia no tiene edge (no hay continuación que explotar) → skip.
+# Conservador: 0.10% (la bajada actual da ~0.49%), solo salta el lateral evidente.
+MIN_TREND_STRENGTH = 0.10
+
 
 @dataclass
 class CycleState:
@@ -48,6 +53,7 @@ class CycleState:
     down_token:     str
     mode:           str   = ""      # "directional" | "skip"
     trend:          str | None = None   # "up" | "down" — tendencia mayor (filtro)
+    trend_strength: float = 0.0         # % separación EMA (fuerza de la tendencia)
     cl_open:        float = 0.0
     spot_open:      float = 0.0
     up_ask_open:    float | None = None
@@ -122,7 +128,8 @@ def run():
         state.cl_open   = get_chainlink_price() or 0.0
         state.spot_open = get_btc_spot()        or 0.0
         spot_diff_open  = state.spot_open - state.cl_open
-        state.trend     = get_btc_trend() if TREND_FILTER else None
+        if TREND_FILTER:
+            state.trend, state.trend_strength = get_btc_trend()
         brain.reset_window()
 
         up_book   = _get_book(state.up_token)
@@ -132,11 +139,19 @@ def run():
 
         state.mode = _decide_mode(state.up_ask_open, state.down_ask_open, spot_diff_open)
 
+        # Gate de FUERZA: si la tendencia es débil (lateral), no hay continuación
+        # que explotar → no operar (solo recoger datos).
+        ranging = TREND_FILTER and state.trend and state.trend_strength < MIN_TREND_STRENGTH
+        if ranging:
+            state.mode = "skip"
+
         print(f"  Mercado  : {state.question}")
         print(f"  CL open  : ${state.cl_open:,.2f}  "
               f"spot open: ${state.spot_open:,.2f}  diff: {spot_diff_open:+.0f}$")
         print(f"  Ask open : UP={state.up_ask_open}  DOWN={state.down_ask_open}")
-        print(f"  MODO     : {state.mode.upper()}  | Tendencia: {(state.trend or '-').upper()}")
+        print(f"  Tendencia: {(state.trend or '-').upper()} "
+              f"(fuerza {state.trend_strength:.2f}%{' — LATERAL, skip' if ranging else ''})")
+        print(f"  MODO     : {state.mode.upper()}")
         print(f"  {brain.summary()}")
 
         active = state.mode == "directional"
