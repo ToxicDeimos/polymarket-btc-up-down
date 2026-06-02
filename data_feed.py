@@ -103,3 +103,34 @@ def get_btc_price() -> tuple[float | None, str]:
     if price:
         return price, "binance"
     return None, "none"
+
+
+def _ema(values: list[float], period: int) -> float:
+    """EMA del último valor de la serie."""
+    k = 2 / (period + 1)
+    ema = values[0]
+    for v in values[1:]:
+        ema = v * k + ema * (1 - k)
+    return ema
+
+
+def get_btc_trend(fast: int = 7, slow: int = 25, interval: str = "15m") -> str | None:
+    """
+    Tendencia dominante de BTC: cruce de EMAs sobre velas de Binance.
+    Timeframe superior a la ventana (15m × EMA25 ≈ 6h) para filtrar rebotes.
+    Retorna "up" (EMA_fast > EMA_slow), "down", o None si falla.
+    """
+    try:
+        resp = requests.get(
+            "https://api.binance.com/api/v3/klines",
+            params={"symbol": "BTCUSDT", "interval": interval, "limit": slow * 4},
+            timeout=6,
+        )
+        if not resp.ok:
+            return None
+        closes = [float(c[4]) for c in resp.json()]   # índice 4 = cierre
+        if len(closes) < slow:
+            return None
+        return "up" if _ema(closes, fast) > _ema(closes, slow) else "down"
+    except Exception:
+        return None

@@ -21,7 +21,7 @@ import requests
 
 from market import get_active_btc_market
 from executor import build_client, place_market_order
-from data_feed import get_chainlink_price, get_btc_spot
+from data_feed import get_chainlink_price, get_btc_spot, get_btc_trend
 from brain import Brain, Signal
 from logger import (ensure_files, log_price_snapshot, log_cycle_result,
                     resolve_pending)
@@ -34,6 +34,10 @@ DIRECTIONAL_MOVE = 40.0
 # Se simula también en dry para que el fill refleje el precio ~2s después.
 EXEC_LATENCY_SECS = 2
 
+# Filtro de tendencia: solo apostar a favor de la tendencia mayor (EMA 7/25 en 15m).
+# Corta las apuestas contra-tendencia (rebotes) que son la mayor sangría.
+TREND_FILTER = True
+
 
 @dataclass
 class CycleState:
@@ -43,6 +47,7 @@ class CycleState:
     up_token:       str
     down_token:     str
     mode:           str   = ""      # "directional" | "skip"
+    trend:          str | None = None   # "up" | "down" — tendencia mayor (filtro)
     cl_open:        float = 0.0
     spot_open:      float = 0.0
     up_ask_open:    float | None = None
@@ -117,6 +122,7 @@ def run():
         state.cl_open   = get_chainlink_price() or 0.0
         state.spot_open = get_btc_spot()        or 0.0
         spot_diff_open  = state.spot_open - state.cl_open
+        state.trend     = get_btc_trend() if TREND_FILTER else None
         brain.reset_window()
 
         up_book   = _get_book(state.up_token)
@@ -130,7 +136,7 @@ def run():
         print(f"  CL open  : ${state.cl_open:,.2f}  "
               f"spot open: ${state.spot_open:,.2f}  diff: {spot_diff_open:+.0f}$")
         print(f"  Ask open : UP={state.up_ask_open}  DOWN={state.down_ask_open}")
-        print(f"  MODO     : {state.mode.upper()}")
+        print(f"  MODO     : {state.mode.upper()}  | Tendencia: {(state.trend or '-').upper()}")
         print(f"  {brain.summary()}")
 
         active = state.mode == "directional"
@@ -178,6 +184,7 @@ def _monitor(client, state: CycleState, brain: Brain, active: bool,
     last_up  = state.up_ask_open
     last_dn  = state.down_ask_open
     entered  = False   # ya apostamos un lado esta ventana
+    trend_blocked = False   # ya avisamos de señal contra-tendencia
     resolved_prev = False   # ya resolvimos la pendiente anterior esta ventana
 
     while True:
@@ -222,35 +229,46 @@ def _monitor(client, state: CycleState, brain: Brain, active: bool,
             )
             if signals:
                 sig = signals[0]
-                entered = True
-                state.signals.append(sig)
-                print(f"\n  [Brain/{sig.edge_type}] {sig.side.upper()} | "
-                      f"P={sig.p_true:.0%} mercado={sig.market_price:.2f} "
-                      f"edge={sig.edge:+.0%} | CL={cl_diff:+.0f}$ spot={spot_diff:+.0f}$")
-                token = state.up_token if sig.side == "up" else state.down_token
-
-                # Latencia real de ejecución: firma+envío tardan ~EXEC_LATENCY s,
-                # durante los cuales el precio puede moverse. Lo simulamos también
-                # en dry para que el fill sea fiel a real.
-                time.sleep(EXEC_LATENCY_SECS)
-
-                if DRY_RUN:
-                    # Market order: caminamos el libro post-latencia → avg real
-                    avg = _simulate_market_fill(token, ORDER_SIZE_USDC) or sig.market_price
-                    slip = (avg - sig.market_price) * 100
-                    print(f"  [DRY] fill MERCADO @ {avg} "
-                          f"(ask señal {sig.market_price} | slippage {slip:+.1f}c)")
-                    if sig.side == "up":
-                        state.up_filled = True;  state.up_fill_price = avg
-                    else:
-                        state.down_filled = True; state.down_fill_price = avg
+                # ── Filtro de tendencia ───────────────────────────────────────
+                # Solo apostar a favor de la tendencia mayor. Si la señal va
+                # contra ella (un rebote), se salta — son las que pierden.
+                contra_tendencia = (TREND_FILTER and state.trend in ("up", "down")
+                                    and sig.side != state.trend)
+                if contra_tendencia:
+                    if not trend_blocked:
+                        trend_blocked = True
+                        print(f"\n  [Tendencia] señal {sig.side.upper()} contra "
+                              f"tendencia {state.trend.upper()} → saltada (rebote)")
+                    # no entrar; seguir vigilando por si aparece señal a favor
                 else:
-                    r = place_market_order(client, token, sig.side.upper(), ORDER_SIZE_USDC)
-                    fp = r.get("avg_price", sig.market_price)
-                    if sig.side == "up":
-                        state.up_filled = True;  state.up_fill_price = fp
+                    entered = True
+                    state.signals.append(sig)
+                    print(f"\n  [Brain/{sig.edge_type}] {sig.side.upper()} | "
+                          f"P={sig.p_true:.0%} mercado={sig.market_price:.2f} "
+                          f"edge={sig.edge:+.0%} | CL={cl_diff:+.0f}$ spot={spot_diff:+.0f}$ "
+                          f"| tend {(state.trend or '-').upper()}")
+                    token = state.up_token if sig.side == "up" else state.down_token
+
+                    # Latencia real de ejecución (~2s): el precio puede moverse.
+                    # Se simula también en dry para que el fill sea fiel a real.
+                    time.sleep(EXEC_LATENCY_SECS)
+
+                    if DRY_RUN:
+                        avg = _simulate_market_fill(token, ORDER_SIZE_USDC) or sig.market_price
+                        slip = (avg - sig.market_price) * 100
+                        print(f"  [DRY] fill MERCADO @ {avg} "
+                              f"(ask señal {sig.market_price} | slippage {slip:+.1f}c)")
+                        if sig.side == "up":
+                            state.up_filled = True;  state.up_fill_price = avg
+                        else:
+                            state.down_filled = True; state.down_fill_price = avg
                     else:
-                        state.down_filled = True; state.down_fill_price = fp
+                        r = place_market_order(client, token, sig.side.upper(), ORDER_SIZE_USDC)
+                        fp = r.get("avg_price", sig.market_price)
+                        if sig.side == "up":
+                            state.up_filled = True;  state.up_fill_price = fp
+                        else:
+                            state.down_filled = True; state.down_fill_price = fp
 
         mode_ch = {"directional": "D", "skip": "S"}.get(state.mode, "?")
         print(f"  [{mode_ch}] {secs_left/60:4.1f}m | "
