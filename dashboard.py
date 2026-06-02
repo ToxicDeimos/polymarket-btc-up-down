@@ -143,7 +143,7 @@ def api_training():
             "up_win_rate":     _wr(up_ops),
             "down_win_rate":   _wr(down_ops),
             "ops_to_adapt":    max(0, 20 - d_total),
-            "ops_to_decide":   max(0, 40 - d_total),
+            "ops_to_decide":   max(0, 150 - d_total),   # confianza estadística preliminar
         })
     except Exception as e:
         return jsonify({"error": str(e)})

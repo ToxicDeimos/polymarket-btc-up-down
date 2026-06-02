@@ -136,7 +136,7 @@
       <!-- Progreso hacia decisión -->
       <div>
         <div style="display:flex; justify-content:space-between; margin-bottom:6px;">
-          <span class="price-label">Progreso hacia decisión (40 ops para veredicto)</span>
+          <span class="price-label">Confianza estadística (~150 ops) — el veredicto REAL exige varios regímenes</span>
           <span id="dir-progress-pct" style="font-weight:700;">0%</span>
         </div>
         <div class="diff-bar" style="height:10px;">
@@ -370,17 +370,20 @@ async function updateTraining() {
     const wrColor = wr => wr === null ? 'var(--muted)' :
                           wr >= 55 ? 'var(--green)' : wr >= 50 ? 'var(--yellow)' : 'var(--red)';
 
-    // Barra de progreso hacia decisión (40 ops)
-    const pct = Math.min(Math.round((t.d_total||0) / 40 * 100), 100);
+    // Barra de confianza estadística (~150 ops)
+    const pct = Math.min(Math.round((t.d_total||0) / 150 * 100), 100);
     $('dir-progress-fill').style.width = `${pct}%`;
     $('dir-progress-pct').textContent = `${pct}%`;
 
     if (t.ops_to_decide > 0) {
-      const adapt = t.ops_to_adapt > 0 ? `${t.ops_to_adapt} para auto-ajuste del threshold, ` : 'threshold ya activo, ';
       $('dir-eta').textContent =
-        `${t.d_total} ops. Faltan ${adapt}${t.ops_to_decide} para veredicto (>55% = edge real, ~50% = ruido).`;
+        `${t.d_total} ops. Faltan ~${t.ops_to_decide} para confianza estadística (±7%). ` +
+        `OJO: aunque llegues, el veredicto real exige ver SUBIDA, bajada y lateral — ` +
+        `estos datos son de un solo régimen (bajista).`;
     } else {
-      $('dir-eta').textContent = `${t.d_total} ops — muestra suficiente para juzgar el edge.`;
+      $('dir-eta').textContent =
+        `${t.d_total} ops — confianza estadística OK. Pero confirma que ` +
+        `gana en VARIOS regímenes (subida/bajada/lateral) antes de fiarte.`;
     }
 
     $('dir-ops').textContent = t.d_total || 0;
