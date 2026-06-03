@@ -35,9 +35,22 @@ def ensure_files():
         _migrate_results_columns()
 
 
-# Esquema canónico de results.csv. Las columnas trend_* se añadieron para poder
-# medir si las pérdidas se concentran en tendencias de fuerza baja (whipsaws).
-# Se anexan AL FINAL para no romper filas antiguas.
+# Campos de PREDICCIÓN del Brain en el momento de entrar. Permiten calibrar:
+# comparar lo que el Brain predijo (p_true, edge) contra el resultado real.
+PRED_FIELDS = [
+    "entry_edge_type",     # open_window | oracle_lag
+    "entry_p_true",        # P(lado apostado gana) según el Brain → CLAVE de calibración
+    "entry_edge",          # ventaja modelo vs mercado (p_true - precio)
+    "entry_price",         # precio de señal (vs fill real → slippage)
+    "entry_cl_diff",       # chainlink_now - chainlink_open al entrar
+    "entry_spot_diff",     # binance_now - binance_open al entrar
+    "entry_secs_elapsed",  # segundos transcurridos al entrar
+    "entry_secs_left",     # segundos restantes al entrar
+    "entry_vol",           # vol $/s que usó el Brain en P(Up)
+]
+
+# Esquema canónico de results.csv. Las columnas trend_* y entry_* se añaden
+# AL FINAL para no romper filas antiguas. La migración las rellena vacías.
 RESULTS_COLUMNS = [
     "timestamp_utc", "condition_id", "question",
     "window_start_et", "window_end_et",
@@ -49,12 +62,12 @@ RESULTS_COLUMNS = [
     "winner", "profit", "total_profit",
     "minutes_active",
     "trend_dir", "trend_strength",
-]
+] + PRED_FIELDS
 
 
 def _migrate_results_columns() -> None:
     """
-    Añade las columnas nuevas (trend_dir, trend_strength) a un results.csv viejo,
+    Añade las columnas nuevas (trend_*, entry_*) a un results.csv viejo,
     rellenando vacío en las filas existentes. Idempotente: si ya están, no hace nada.
     """
     try:
@@ -116,7 +129,8 @@ def log_cycle_result(condition_id, question,
                      mode: str = "",
                      profit: float = 0.0,
                      up_fill_price=None, down_fill_price=None,
-                     trend_dir: str = "", trend_strength=None) -> str:
+                     trend_dir: str = "", trend_strength=None,
+                     pred: dict | None = None) -> str:
     """
     Guarda el resumen de la ventana en results.csv.
     Incluye el precio REAL de entrada (fill_price) para poder recalcular el
@@ -171,6 +185,7 @@ def log_cycle_result(condition_id, question,
             round(minutes_active, 1),
             trend_dir or "",
             round(trend_strength, 3) if trend_strength is not None else "",
+            *[(pred or {}).get(k, "") for k in PRED_FIELDS],
         ])
 
     print(f"  Resolución guardada: {winner}")

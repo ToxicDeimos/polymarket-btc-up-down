@@ -67,6 +67,7 @@ class CycleState:
     down_filled:    bool  = False
     up_fill_price:  float | None = None
     down_fill_price: float | None = None
+    entry_vol:      float = 0.0          # vol $/s del Brain al entrar (para calibrar)
     signals: list = field(default_factory=list)
     profit:  float = 0.0
 
@@ -189,6 +190,22 @@ def run():
         else:
             print(f"\n  Sin entrada")
 
+        # Predicción del Brain en el momento de entrar (para calibrar después)
+        pred = None
+        if state.signals:
+            s = state.signals[0]
+            pred = {
+                "entry_edge_type":    s.edge_type,
+                "entry_p_true":       round(s.p_true, 4),
+                "entry_edge":         round(s.edge, 4),
+                "entry_price":        round(s.market_price, 4),
+                "entry_cl_diff":      round(s.btc_diff, 1),
+                "entry_spot_diff":    round(s.spot_diff, 1),
+                "entry_secs_elapsed": round(s.secs_elapsed, 1),
+                "entry_secs_left":    round(s.secs_left, 1),
+                "entry_vol":          round(state.entry_vol, 4),
+            }
+
         log_cycle_result(
             condition_id=state.condition_id, question=state.question,
             up_ask_open=state.up_ask_open, down_ask_open=state.down_ask_open,
@@ -197,7 +214,8 @@ def run():
             up_fill_price=state.up_fill_price, down_fill_price=state.down_fill_price,
             minutes_active=state.minutes_active, winner="pending",
             mode=state.mode, profit=0.0,
-            trend_dir=state.trend or "", trend_strength=state.trend_strength)
+            trend_dir=state.trend or "", trend_strength=state.trend_strength,
+            pred=pred)
 
         # Guardar para aprender cuando se resuelva (lleva los signals en memoria)
         if state.signals:
@@ -274,6 +292,7 @@ def _monitor(client, state: CycleState, brain: Brain, active: bool,
                     # no entrar; seguir vigilando por si aparece señal a favor
                 else:
                     entered = True
+                    state.entry_vol = brain.vol_per_sec   # vol usada en P(Up) al entrar
                     state.signals.append(sig)
                     print(f"\n  [Brain/{sig.edge_type}] {sig.side.upper()} | "
                           f"P={sig.p_true:.0%} mercado={sig.market_price:.2f} "
