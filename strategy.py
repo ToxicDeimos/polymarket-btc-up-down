@@ -196,7 +196,8 @@ def run():
             up_filled=state.up_filled, down_filled=state.down_filled,
             up_fill_price=state.up_fill_price, down_fill_price=state.down_fill_price,
             minutes_active=state.minutes_active, winner="pending",
-            mode=state.mode, profit=0.0)
+            mode=state.mode, profit=0.0,
+            trend_dir=state.trend or "", trend_strength=state.trend_strength)
 
         # Guardar para aprender cuando se resuelva (lleva los signals en memoria)
         if state.signals:

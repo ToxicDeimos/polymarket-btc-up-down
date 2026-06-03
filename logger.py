@@ -30,17 +30,51 @@ def ensure_files():
 
     if not os.path.exists(RESULTS_FILE):
         with open(RESULTS_FILE, "w", newline="", encoding="utf-8") as f:
-            csv.writer(f).writerow([
-                "timestamp_utc", "condition_id", "question",
-                "window_start_et", "window_end_et",
-                "mode",
-                "up_ask_open", "down_ask_open",
-                "up_ask_close", "down_ask_close",
-                "up_filled", "down_filled",
-                "up_fill_price", "down_fill_price",
-                "winner", "profit", "total_profit",
-                "minutes_active",
-            ])
+            csv.writer(f).writerow(RESULTS_COLUMNS)
+    else:
+        _migrate_results_columns()
+
+
+# Esquema canónico de results.csv. Las columnas trend_* se añadieron para poder
+# medir si las pérdidas se concentran en tendencias de fuerza baja (whipsaws).
+# Se anexan AL FINAL para no romper filas antiguas.
+RESULTS_COLUMNS = [
+    "timestamp_utc", "condition_id", "question",
+    "window_start_et", "window_end_et",
+    "mode",
+    "up_ask_open", "down_ask_open",
+    "up_ask_close", "down_ask_close",
+    "up_filled", "down_filled",
+    "up_fill_price", "down_fill_price",
+    "winner", "profit", "total_profit",
+    "minutes_active",
+    "trend_dir", "trend_strength",
+]
+
+
+def _migrate_results_columns() -> None:
+    """
+    Añade las columnas nuevas (trend_dir, trend_strength) a un results.csv viejo,
+    rellenando vacío en las filas existentes. Idempotente: si ya están, no hace nada.
+    """
+    try:
+        with open(RESULTS_FILE, newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            header = reader.fieldnames or []
+            missing = [c for c in RESULTS_COLUMNS if c not in header]
+            if not missing:
+                return
+            rows = list(reader)
+        for r in rows:
+            for c in missing:
+                r.setdefault(c, "")
+        with open(RESULTS_FILE, "w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=RESULTS_COLUMNS)
+            w.writeheader()
+            w.writerows(rows)
+        print(f"  [Logger] results.csv migrado: +{', '.join(missing)}")
+    except Exception as e:
+        print(f"  [Logger] migración omitida: {e}")
 
 
 def log_price_snapshot(condition_id, question,
@@ -81,7 +115,8 @@ def log_cycle_result(condition_id, question,
                      winner: str = "pending",
                      mode: str = "",
                      profit: float = 0.0,
-                     up_fill_price=None, down_fill_price=None) -> str:
+                     up_fill_price=None, down_fill_price=None,
+                     trend_dir: str = "", trend_strength=None) -> str:
     """
     Guarda el resumen de la ventana en results.csv.
     Incluye el precio REAL de entrada (fill_price) para poder recalcular el
@@ -134,6 +169,8 @@ def log_cycle_result(condition_id, question,
             up_fill_price, down_fill_price,
             winner, round(profit, 2), running_total,
             round(minutes_active, 1),
+            trend_dir or "",
+            round(trend_strength, 3) if trend_strength is not None else "",
         ])
 
     print(f"  Resolución guardada: {winner}")
