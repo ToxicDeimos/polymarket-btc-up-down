@@ -22,17 +22,25 @@ RESULTS_FILE = os.path.join(os.path.dirname(__file__), "results.csv")
 def ensure_files():
     if not os.path.exists(PRICES_FILE):
         with open(PRICES_FILE, "w", newline="", encoding="utf-8") as f:
-            csv.writer(f).writerow([
-                "timestamp_utc", "condition_id", "question",
-                "seconds_elapsed", "seconds_remaining",
-                "up_ask", "down_ask", "up_bid", "down_bid",
-            ])
+            csv.writer(f).writerow(PRICES_COLUMNS)
+    else:
+        _migrate_columns(PRICES_FILE, PRICES_COLUMNS)
 
     if not os.path.exists(RESULTS_FILE):
         with open(RESULTS_FILE, "w", newline="", encoding="utf-8") as f:
             csv.writer(f).writerow(RESULTS_COLUMNS)
     else:
-        _migrate_results_columns()
+        _migrate_columns(RESULTS_FILE, RESULTS_COLUMNS)
+
+
+# Esquema de prices.csv. cl_price/spot_price (BTC) se añaden para poder medir la
+# VOL REALIZADA por ventana y compararla con la que estima el Brain (calibración).
+PRICES_COLUMNS = [
+    "timestamp_utc", "condition_id", "question",
+    "seconds_elapsed", "seconds_remaining",
+    "up_ask", "down_ask", "up_bid", "down_bid",
+    "cl_price", "spot_price",
+]
 
 
 # Campos de PREDICCIÓN del Brain en el momento de entrar. Permiten calibrar:
@@ -65,34 +73,35 @@ RESULTS_COLUMNS = [
 ] + PRED_FIELDS
 
 
-def _migrate_results_columns() -> None:
+def _migrate_columns(path: str, columns: list) -> None:
     """
-    Añade las columnas nuevas (trend_*, entry_*) a un results.csv viejo,
-    rellenando vacío en las filas existentes. Idempotente: si ya están, no hace nada.
+    Añade columnas nuevas a un CSV existente, rellenando vacío en las filas
+    antiguas. Idempotente: si ya están todas, no hace nada.
     """
     try:
-        with open(RESULTS_FILE, newline="", encoding="utf-8") as f:
+        with open(path, newline="", encoding="utf-8") as f:
             reader = csv.DictReader(f)
             header = reader.fieldnames or []
-            missing = [c for c in RESULTS_COLUMNS if c not in header]
+            missing = [c for c in columns if c not in header]
             if not missing:
                 return
             rows = list(reader)
         for r in rows:
             for c in missing:
                 r.setdefault(c, "")
-        with open(RESULTS_FILE, "w", newline="", encoding="utf-8") as f:
-            w = csv.DictWriter(f, fieldnames=RESULTS_COLUMNS)
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=columns)
             w.writeheader()
             w.writerows(rows)
-        print(f"  [Logger] results.csv migrado: +{', '.join(missing)}")
+        print(f"  [Logger] {os.path.basename(path)} migrado: +{', '.join(missing)}")
     except Exception as e:
-        print(f"  [Logger] migración omitida: {e}")
+        print(f"  [Logger] migración omitida ({os.path.basename(path)}): {e}")
 
 
 def log_price_snapshot(condition_id, question,
                        seconds_elapsed, seconds_remaining,
-                       up_book, down_book):
+                       up_book, down_book,
+                       cl_price=None, spot_price=None):
     with open(PRICES_FILE, "a", newline="", encoding="utf-8") as f:
         csv.writer(f).writerow([
             datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
@@ -100,6 +109,8 @@ def log_price_snapshot(condition_id, question,
             round(seconds_elapsed, 1), round(seconds_remaining, 1),
             _best_ask(up_book), _best_ask(down_book),
             _best_bid(up_book), _best_bid(down_book),
+            round(cl_price, 2) if cl_price else "",
+            round(spot_price, 2) if spot_price else "",
         ])
 
 

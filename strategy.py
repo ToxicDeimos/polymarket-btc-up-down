@@ -266,7 +266,8 @@ def _monitor(client, state: CycleState, brain: Brain, active: bool,
         last_up, last_dn = up_ask, dn_ask
 
         log_price_snapshot(state.condition_id, state.question,
-                           secs_elapsed, secs_left, up_book, down_book)
+                           secs_elapsed, secs_left, up_book, down_book,
+                           cl_price=cl_now, spot_price=spot_now)
         _write_status(state, cl_now, cl_diff, spot_diff, up_ask, dn_ask, secs_left)
 
         # ── Evaluación del Brain: una sola apuesta por ventana ────────────────
