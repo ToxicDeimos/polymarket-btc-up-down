@@ -47,7 +47,10 @@ class Signal:
 
 class Brain:
     def __init__(self):
-        self.vol_per_sec: float  = 0.55    # σ BTC en $/segundo (se actualiza en vivo)
+        # σ de BTC en $/√segundo (random walk: std del movimiento en T s = vol·√T).
+        # Se mide en vivo con vol realizada (RMS). Valor inicial ~realista (~6) para
+        # no arrancar sobreconfiado; converge en la 1ª ventana.
+        self.vol_per_sec: float  = 6.0
         self.edge_threshold: float = EDGE_THRESHOLD
         self.history: list[dict]   = []
         self.learned_ids: set      = set()  # condition_ids ya en el historial (dedup)
@@ -233,20 +236,26 @@ class Brain:
         """P(Up gana) usando random walk sobre Chainlink."""
         if secs_left <= 1:
             return 1.0 if cl_diff > 0 else (0.0 if cl_diff < 0 else 0.5)
-        vol = max(self.vol_per_sec, 0.10)
-        z = cl_diff / (vol * math.sqrt(secs_left))
+        vol = max(self.vol_per_sec, 2.0)   # suelo $/√s: evita P degeneradas si la
+        z = cl_diff / (vol * math.sqrt(secs_left))   # ventana es anormalmente quieta
         return 0.5 * (1.0 + math.erf(z / math.sqrt(2)))
 
     def _update_vol(self) -> None:
+        """
+        Vol REALIZADA (σ en $/√s) por variación cuadrática:  σ = √(media(ΔP²/Δt)).
+        Es lo que exige z = cl_diff/(σ·√secs_left). La versión anterior usaba
+        media(|ΔP|/Δt) ($/s, otras unidades) y los tramos planos de Chainlink
+        (ΔP=0 entre updates) la hundían → infraestimaba ~10x → P sobreconfiadas.
+        Los ceros NO sesgan la variación cuadrática (suman 0), solo la media-abs.
+        """
         buf = self._price_buf
         if len(buf) < 4:
             return
-        diffs = [abs(buf[i][1] - buf[i-1][1]) for i in range(1, len(buf))]
-        dt    = [buf[i][0] - buf[i-1][0] for i in range(1, len(buf))]
-        # $/segundo promedio
-        rates = [d/t for d, t in zip(diffs, dt) if t > 0]
-        if rates:
-            new_vol = sum(rates) / len(rates)
+        contribs = [ (buf[i][1] - buf[i-1][1]) ** 2 / dt
+                     for i in range(1, len(buf))
+                     for dt in [buf[i][0] - buf[i-1][0]] if dt > 0 ]
+        if contribs:
+            new_vol = math.sqrt(sum(contribs) / len(contribs))
             self.vol_per_sec = 0.8 * self.vol_per_sec + 0.2 * new_vol
 
     MIN_OPS_TO_ADAPT = 20   # no tocar el threshold hasta tener masa estadística
@@ -273,13 +282,14 @@ class Brain:
             try:
                 with open(STATS_FILE, encoding="utf-8") as f:
                     d = json.load(f)
-                self.vol_per_sec    = d.get("vol", self.vol_per_sec)
+                # NO restaurar 'vol': se mide en vivo cada sesión (RMS). El valor
+                # guardado puede ser del estimador antiguo (infraestimado ~10x).
                 self.edge_threshold = d.get("threshold", self.edge_threshold)
                 self.history        = d.get("history", [])
                 self.learned_ids    = set(d.get("learned_ids", []))
                 print(f"  [Brain] Cargado: {len(self.history)} ops | "
                       f"threshold={self.edge_threshold:.0%} | "
-                      f"vol=${self.vol_per_sec:.3f}/s")
+                      f"vol inicial=${self.vol_per_sec:.2f}/√s")
             except Exception:
                 pass
 
