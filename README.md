@@ -45,14 +45,58 @@ El bot opera un único enfoque: **direccional**.
 
 El dry run cumplió su función: **dar evidencia antes de arriesgar dinero.**
 
-- **El arbitrage de doble límite 40¢ NO funciona aquí** (estrategia original, descartada y
-  eliminada del código). El mercado BTC 15m cierra a un extremo (0.01/0.99) el **88%** de las
-  veces — *tiende, no oscila* — así que ambos lados nunca llenan a la vez: **0 dobles en 7
-  intentos**.
-- **El direccional está en evaluación.** Resultados prometedores pero con sesgo de régimen
-  (ganó apostando con la tendencia bajista). Veredicto pendiente de ~40 operaciones a través
-  de mercados alcistas, bajistas y laterales — el test clave es si **gana también apostando
-  UP** cuando BTC sube.
+**1. El arbitrage de doble límite 40¢ NO funciona aquí** (descartado y eliminado).
+El mercado BTC 15m cierra a un extremo (0.01/0.99) el **88%** de las veces — *tiende,
+no oscila* — así que ambos lados nunca llenan a la vez: **0 dobles en 7 intentos**.
+
+**2. El "edge del lag" NO existe — el mercado es eficiente.**
+La tesis original (Polymarket va por detrás de Binance porque Chainlink actualiza cada
+~27s) se **midió** con 268 ventanas: `corr(Δspot, Δask) = +0.63 a 0s` y **~0 a partir de
+5s**. El ask reprecia al instante; no hay retraso explotable por un bot que sondea cada 5s
+con 2s de latencia. *(reproducible con `validate.py`, bloque 1)*
+
+**3. Bug de volatilidad → sobreconfianza ~10x (corregido).**
+El Brain estimaba la vol con `media(|ΔP|/Δt)` en una fórmula que exige
+`sqrt(media(ΔP²/Δt))` → la infraestimaba ~10x → decía "99% seguro" cuando era ~65%.
+Corregido (vol realizada RMS). Con probabilidades **honestas**, el win rate real es ~53%
+a precios ~0.55 = **-EV**. El "beneficio" previo era el bug (apostaba agresivo) + suerte de
+una tendencia bajista limpia, **no un edge real**.
+
+---
+
+## 🧪 Hipótesis en validación: *fade temprano / follow medio*
+
+Medir el **precio del mercado** (no el lag) reveló una ineficiencia: el mercado
+**sobrerreacciona temprano** (el favorito a 30s gana solo ~48-50%) y **sub-converge a media
+ventana** (un lado a 0.7 acaba ganando 84%). Esto es lo **contrario** de lo que hacía el bot
+(momentum temprano), lo que explica los whipsaws.
+
+**Pero depende del régimen** *(medido con `trend_strength`, EMA 7/25 en 15m)*:
+
+| Régimen | Favorito temprano (30s) gana | ¿Fadear es +EV? |
+|---------|------------------------------|-----------------|
+| RANGE (chop) | 44% | Sí (EV favorito −22%) |
+| WEAK | 31% | Sí (EV −47%) |
+| **STRONG trend** | **58%** | **No — el favorito continúa** |
+
+→ Es un posible edge de **mean-reversion, condicionado a chop**. Muere en tendencia fuerte.
+
+### Reglas PRE-REGISTRADAS (congeladas — NO re-tunear con datos futuros)
+
+```
+FADE   : en T ∈ [30, 60]s,   comprar el lado con ask ∈ [0.35, 0.48]
+FOLLOW : en T ∈ [420, 480]s, comprar el lado con ask ∈ [0.65, 0.85]
+Etiqueta de régimen por ventana: trend_strength  (RANGE <0.15% · WEAK <0.35% · STRONG ≥0.35%)
+```
+
+**Barra de aprobación:** +EV (tras fees y fills reales) en **≥2 regímenes macro distintos**,
+incluyendo **una tendencia fuerte**, con **n≥30** e **IC del EV > 0**. Si solo gana en chop
+→ es un artefacto de régimen (como el lag) y se descarta.
+
+**Disciplina:** el bot **no apuesta** este edge hasta que pase la barra. Mientras, actúa solo
+como **colector de datos** (`prices.csv` + winners). La validación es post-procesado puro
+(`validate.py`) — cero código nuevo, cero riesgo. Falta sobre todo una **tendencia alcista
+sostenida** y una **tendencia fuerte** para cerrar el veredicto.
 
 ---
 
@@ -69,6 +113,8 @@ polymarket-btc-up-down/
 ├── logger.py        # Persistencia: results.csv + prices.csv
 ├── dashboard.py     # Panel web Flask (http://localhost:5000)
 ├── config.py        # Configuración y flags
+├── analysis.py      # Análisis: calibración del Brain, régimen, vol estimada vs realizada
+├── validate.py      # Validación de ineficiencias: lag, precio (favorito-longshot), régimen
 ├── templates/
 │   └── index.html   # UI del dashboard
 ├── requirements.txt
@@ -76,10 +122,17 @@ polymarket-btc-up-down/
 ```
 
 **Archivos de datos generados:**
-- `results.csv` — resumen por ventana (precios, fills, ganador, P&L acumulado).
-- `prices.csv` — snapshot de precios cada 15s.
+- `results.csv` — resumen por ventana: precios, fills, ganador, P&L, **predicción del Brain
+  por apuesta** (`entry_p_true`, `entry_edge`…) y **tendencia** (`trend_dir`, `trend_strength`).
+- `prices.csv` — snapshot cada ~6s: libro de órdenes + **precio BTC** (`cl_price`, `spot_price`).
 - `brain_stats.json` — estado de entrenamiento del Brain.
 - `status.json` — estado en vivo para el dashboard.
+
+**Herramientas de análisis** (post-procesado, leen los CSV; aceptan ruta opcional a los datos):
+```bash
+python analysis.py [carpeta_datos]    # calibración del Brain, win rate por régimen, vol
+python validate.py [carpeta_datos]    # ¿lag? ¿precio +EV? ¿el edge sobrevive al régimen?
+```
 
 ---
 
