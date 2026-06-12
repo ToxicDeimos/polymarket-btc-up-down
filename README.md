@@ -19,25 +19,38 @@ Bitcoin al cierre es ≥ al de apertura, y a **"Down"** en caso contrario.
 
 ---
 
-## 🧠 Estrategia
+## 🧠 Estrategia actual: FADE del favorito temprano
 
-El bot opera un único enfoque: **direccional**.
+> El enfoque original (lag Binance→Chainlink) se **midió y descartó** — el mercado es
+> eficiente a esa escala (ver Hallazgos). La estrategia activa ahora es el **fade**, que
+> corre en **DRY como test out-of-sample** de la ineficiencia de precio encontrada.
 
 | Modo | Cuándo | Lógica |
 |------|--------|--------|
-| **DIRECCIONAL** | hay precios y movimiento spot en la apertura | El `Brain` apuesta **un solo lado** si detecta edge durante la ventana |
-| **SKIP** | sin precios/señal | No opera (coste $0) |
+| **FADE** (`directional`) | hay precios y `trend_strength` < 0.35% | Compra el lado **barato** (favorito fadeado) en T∈[30,60]s |
+| **SKIP** | sin precios, o **tendencia fuerte** (≥0.35%) | No opera (en trend fuerte el movimiento continúa) |
 
-### El Brain (motor de decisión)
+### La regla (pre-registrada — ver `brain.py` → `evaluate_fade`)
 
-- Modelo probabilístico (random walk tipo Black-Scholes digital) sobre Chainlink.
-- Dos edges, ambos basados en el **lag** entre Binance (tiempo real) y Chainlink
-  (actualiza cada ~27s), que el precio de Polymarket no refleja al instante:
-  - **Edge 1** (apertura, T<120s): el spot ya se movió pero el mercado sigue ~50/50.
-  - **Edge 2** (oracle lag, T=2-10min): Chainlink confirma dirección que el mercado no ha repreciado.
-- Una sola apuesta por ventana (nunca ambos lados).
-- Aprende de cada resultado y ajusta su `edge_threshold` (a partir de 20 ops).
-- Persiste su entrenamiento en `brain_stats.json` (sobrevive reinicios).
+```
+En T ∈ [30, 60]s de la ventana:
+  si un lado cotiza ask ∈ [0.35, 0.48]  →  comprarlo (el mercado sobrerreaccionó)
+  salvo que trend_strength ≥ 0.35%      →  skip (tendencia fuerte: el favorito continúa)
+Una sola apuesta por ventana · hold hasta resolución.
+```
+
+El favorito temprano gana solo ~48-50% (revierte) en chop, pero ~56% (continúa) en
+tendencia fuerte → fadear es +EV solo fuera de la tendencia fuerte.
+
+### ⏱️ Criterio de muerte (pre-fijado — sin re-tunear)
+
+El dry P&L de aquí en adelante, sobre ventanas **nuevas**, es el test out-of-sample:
+
+```
+Evaluar tras ≥40 apuestas fade resueltas (correr `python validate.py`):
+  CONTINÚA si  EV realizado por apuesta > 0  Y  win_rate > precio medio de entrada
+  SE DESCARTA si EV ≤ 0  (el edge no sobrevive fuera de muestra, como el lag)
+```
 
 ---
 

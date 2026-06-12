@@ -31,6 +31,17 @@ MIN_ENTRY_PRICE  = 0.42   # nunca pagar menos de 42¢ (señal demasiado tarde/ob
 EDGE_THRESHOLD   = 0.08   # ventaja mínima modelo vs mercado para entrar
 OPEN_WINDOW_SECS = 120    # segundos iniciales donde aplica Edge 1
 
+# ── Estrategia FADE (PRE-REGISTRADA — no re-tunear con datos futuros) ──────────
+# El mercado SOBRERREACCIONA al movimiento inicial: el "favorito" temprano gana solo
+# ~48-50% y revierte. Se fadea comprando el lado BARATO. PERO en tendencia fuerte el
+# movimiento CONTINÚA (favorito gana ~56%) → ahí no se fadea. Edge medido en dry:
+# +EV en RANGE/WEAK, ≈break-even en STRONG. El dry run en vivo es el test out-of-sample.
+FADE_T_MIN              = 30     # s: ventana de entrada [30, 60]
+FADE_T_MAX              = 60
+FADE_PRICE_LO           = 0.35   # comprar el lado con ask ∈ [0.35, 0.48]
+FADE_PRICE_HI           = 0.48
+FADE_MAX_TREND_STRENGTH = 0.35   # % separación EMA: ≥ esto = tendencia fuerte → NO fadear
+
 
 @dataclass
 class Signal:
@@ -129,6 +140,25 @@ class Brain:
                     signals.append(sig)
 
         return signals
+
+    def evaluate_fade(self, up_ask, down_ask, secs_elapsed, trend_strength):
+        """
+        Regla PRE-REGISTRADA (fade del favorito temprano).
+        En T∈[FADE_T_MIN,FADE_T_MAX]s, comprar el lado BARATO (ask∈[LO,HI]): el mercado
+        sobrerreaccionó al movimiento inicial y tiende a revertir. NO fadear en
+        tendencia fuerte (trend_strength ≥ FADE_MAX_TREND_STRENGTH): ahí el movimiento
+        continúa. Retorna una Signal o None.
+        """
+        if not (FADE_T_MIN <= secs_elapsed <= FADE_T_MAX):
+            return None
+        if trend_strength is not None and trend_strength >= FADE_MAX_TREND_STRENGTH:
+            return None
+        for side, ask in (("up", up_ask), ("down", down_ask)):
+            if ask is not None and FADE_PRICE_LO <= ask <= FADE_PRICE_HI:
+                return Signal(side=side, edge_type="fade_open", market_price=ask,
+                              p_true=ask, edge=0.0, btc_diff=0.0, spot_diff=0.0,
+                              secs_elapsed=secs_elapsed, secs_left=0.0)
+        return None
 
     def record_outcome(self, winner: str, signals: list[Signal],
                        condition_id: str | None = None) -> None:

@@ -22,26 +22,18 @@ import requests
 from market import get_active_btc_market
 from executor import build_client, place_market_order
 from data_feed import get_chainlink_price, get_btc_spot, get_btc_trend
-from brain import Brain, Signal
+from brain import Brain, Signal, FADE_MAX_TREND_STRENGTH
 from logger import (ensure_files, log_price_snapshot, log_cycle_result,
                     resolve_pending)
 from config import POLL_INTERVAL, ORDER_SIZE_USDC, DRY_RUN, CLOB_HOST, TAKER_FEE_RATE
-
-# Movimiento spot mínimo en la apertura para vigilar la ventana (si no, skip)
-DIRECTIONAL_MOVE = 40.0
 
 # Latencia estimada de ejecución real (firma + envío de la orden al CLOB).
 # Se simula también en dry para que el fill refleje el precio ~2s después.
 EXEC_LATENCY_SECS = 2
 
-# Filtro de tendencia: solo apostar a favor de la tendencia mayor (EMA 7/25 en 15m).
-# Corta las apuestas contra-tendencia (rebotes) que son la mayor sangría.
+# Se calcula la tendencia (EMA 7/25 en 15m) para el gate de régimen del fade:
+# en tendencia fuerte no se fadea (ver FADE_MAX_TREND_STRENGTH en brain.py).
 TREND_FILTER = True
-
-# Fuerza mínima de tendencia (% separación EMA) para operar. Por debajo = lateral,
-# donde la estrategia no tiene edge (no hay continuación que explotar) → skip.
-# Conservador: 0.10% (la bajada actual da ~0.49%), solo salta el lateral evidente.
-MIN_TREND_STRENGTH = 0.10
 
 
 @dataclass
@@ -90,11 +82,16 @@ def _compute_profit(state: "CycleState", winner: str) -> float:
 
 
 def _decide_mode(up_ask: float | None, down_ask: float | None,
-                 spot_diff: float) -> str:
-    """DIRECTIONAL si hay precios y movimiento spot; SKIP en otro caso."""
+                 trend_strength: float | None) -> str:
+    """
+    FADE: operamos si hay precios y NO estamos en tendencia fuerte.
+    En tendencia fuerte el movimiento temprano continúa → fadear no funciona → skip.
+    """
     if up_ask is None or down_ask is None:
         return "skip"
-    return "directional" if abs(spot_diff) >= DIRECTIONAL_MOVE else "skip"
+    if trend_strength is not None and trend_strength >= FADE_MAX_TREND_STRENGTH:
+        return "skip"
+    return "directional"
 
 
 def run():
@@ -103,8 +100,8 @@ def run():
     mode_tag = "[DRY RUN]" if DRY_RUN else "[REAL]"
 
     print("=" * 62)
-    print(f"  Polymarket BTC Up/Down 15m — Direccional  {mode_tag}")
-    print(f"  El Brain apuesta un lado solo si detecta edge (lag CL/Binance)")
+    print(f"  Polymarket BTC Up/Down 15m — FADE  {mode_tag}")
+    print(f"  Fadea el favorito temprano (compra el lado barato), salvo en trend fuerte")
     print("=" * 62)
 
     ensure_files()
@@ -154,21 +151,19 @@ def run():
         state.up_ask_open   = _best_ask(up_book)
         state.down_ask_open = _best_ask(down_book)
 
-        state.mode = _decide_mode(state.up_ask_open, state.down_ask_open, spot_diff_open)
+        state.mode = _decide_mode(state.up_ask_open, state.down_ask_open, state.trend_strength)
 
-        # Gate de FUERZA: si la tendencia es débil (lateral), no hay continuación
-        # que explotar → no operar (solo recoger datos).
-        ranging = TREND_FILTER and state.trend and state.trend_strength < MIN_TREND_STRENGTH
-        if ranging:
-            state.mode = "skip"
+        # En tendencia fuerte el fade no funciona (el movimiento temprano continúa).
+        strong = (state.trend_strength is not None
+                  and state.trend_strength >= FADE_MAX_TREND_STRENGTH)
 
         print(f"  Mercado  : {state.question}")
         print(f"  CL open  : ${state.cl_open:,.2f}  "
               f"spot open: ${state.spot_open:,.2f}  diff: {spot_diff_open:+.0f}$")
         print(f"  Ask open : UP={state.up_ask_open}  DOWN={state.down_ask_open}")
         print(f"  Tendencia: {(state.trend or '-').upper()} "
-              f"(fuerza {state.trend_strength:.2f}%{' — LATERAL, skip' if ranging else ''})")
-        print(f"  MODO     : {state.mode.upper()}")
+              f"(fuerza {state.trend_strength:.2f}%{' — TENDENCIA FUERTE, no fade' if strong else ''})")
+        print(f"  MODO     : {state.mode.upper()} (fade)")
         print(f"  {brain.summary()}")
 
         active = state.mode == "directional"
@@ -234,7 +229,6 @@ def _monitor(client, state: CycleState, brain: Brain, active: bool,
     last_up  = state.up_ask_open
     last_dn  = state.down_ask_open
     entered  = False   # ya apostamos un lado esta ventana
-    trend_blocked = False   # ya avisamos de señal contra-tendencia
     resolved_prev = False   # ya resolvimos la pendiente anterior esta ventana
 
     while True:
@@ -270,57 +264,37 @@ def _monitor(client, state: CycleState, brain: Brain, active: bool,
                            cl_price=cl_now, spot_price=spot_now)
         _write_status(state, cl_now, cl_diff, spot_diff, up_ask, dn_ask, secs_left)
 
-        # ── Evaluación del Brain: una sola apuesta por ventana ────────────────
+        # ── Regla FADE: una sola apuesta por ventana ──────────────────────────
+        # Comprar el lado barato (favorito fadeado) en T∈[30,60]s, fuera de trend fuerte.
         if active and not entered:
-            signals = brain.evaluate(
-                cl_open=state.cl_open,    cl_now=cl_now,
-                spot_open=state.spot_open, spot_now=spot_now,
-                up_ask=up_ask,             down_ask=dn_ask,
-                secs_elapsed=secs_elapsed, secs_left=secs_left,
-            )
-            if signals:
-                sig = signals[0]
-                # ── Filtro de tendencia ───────────────────────────────────────
-                # Solo apostar a favor de la tendencia mayor. Si la señal va
-                # contra ella (un rebote), se salta — son las que pierden.
-                contra_tendencia = (TREND_FILTER and state.trend in ("up", "down")
-                                    and sig.side != state.trend)
-                if contra_tendencia:
-                    if not trend_blocked:
-                        trend_blocked = True
-                        print(f"\n  [Tendencia] señal {sig.side.upper()} contra "
-                              f"tendencia {state.trend.upper()} → saltada (rebote)")
-                    # no entrar; seguir vigilando por si aparece señal a favor
-                else:
-                    entered = True
-                    state.entry_vol = brain.vol_per_sec   # vol usada en P(Up) al entrar
-                    state.signals.append(sig)
-                    print(f"\n  [Brain/{sig.edge_type}] {sig.side.upper()} | "
-                          f"P={sig.p_true:.0%} mercado={sig.market_price:.2f} "
-                          f"edge={sig.edge:+.0%} | CL={cl_diff:+.0f}$ spot={spot_diff:+.0f}$ "
-                          f"| tend {(state.trend or '-').upper()}")
-                    token = state.up_token if sig.side == "up" else state.down_token
+            sig = brain.evaluate_fade(up_ask, dn_ask, secs_elapsed, state.trend_strength)
+            if sig:
+                entered = True
+                state.entry_vol = brain.vol_per_sec
+                state.signals.append(sig)
+                print(f"\n  [Fade] comprar {sig.side.upper()} @ {sig.market_price:.2f} "
+                      f"(favorito fadeado | fuerza {state.trend_strength:.2f}% | t={secs_elapsed:.0f}s)")
+                token = state.up_token if sig.side == "up" else state.down_token
 
-                    # Latencia real de ejecución (~2s): el precio puede moverse.
-                    # Se simula también en dry para que el fill sea fiel a real.
-                    time.sleep(EXEC_LATENCY_SECS)
+                # Latencia real de ejecución (~2s): se simula también en dry.
+                time.sleep(EXEC_LATENCY_SECS)
 
-                    if DRY_RUN:
-                        avg = _simulate_market_fill(token, ORDER_SIZE_USDC) or sig.market_price
-                        slip = (avg - sig.market_price) * 100
-                        print(f"  [DRY] fill MERCADO @ {avg} "
-                              f"(ask señal {sig.market_price} | slippage {slip:+.1f}c)")
-                        if sig.side == "up":
-                            state.up_filled = True;  state.up_fill_price = avg
-                        else:
-                            state.down_filled = True; state.down_fill_price = avg
+                if DRY_RUN:
+                    avg = _simulate_market_fill(token, ORDER_SIZE_USDC) or sig.market_price
+                    slip = (avg - sig.market_price) * 100
+                    print(f"  [DRY] fill MERCADO @ {avg} "
+                          f"(ask señal {sig.market_price} | slippage {slip:+.1f}c)")
+                    if sig.side == "up":
+                        state.up_filled = True;  state.up_fill_price = avg
                     else:
-                        r = place_market_order(client, token, sig.side.upper(), ORDER_SIZE_USDC)
-                        fp = r.get("avg_price", sig.market_price)
-                        if sig.side == "up":
-                            state.up_filled = True;  state.up_fill_price = fp
-                        else:
-                            state.down_filled = True; state.down_fill_price = fp
+                        state.down_filled = True; state.down_fill_price = avg
+                else:
+                    r = place_market_order(client, token, sig.side.upper(), ORDER_SIZE_USDC)
+                    fp = r.get("avg_price", sig.market_price)
+                    if sig.side == "up":
+                        state.up_filled = True;  state.up_fill_price = fp
+                    else:
+                        state.down_filled = True; state.down_fill_price = fp
 
         mode_ch = {"directional": "D", "skip": "S"}.get(state.mode, "?")
         print(f"  [{mode_ch}] {secs_left/60:4.1f}m | "
