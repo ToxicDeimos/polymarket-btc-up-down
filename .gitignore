@@ -16,3 +16,6 @@ status.json
 
 # Tooling local
 .claude/
+
+# Datos de investigacion (no codigo, se regeneran)
+research/*.csv
