@@ -15,12 +15,14 @@ Autónomo (urllib, stdlib). Analiza el log cuando tengas ~50-100 fills.
 import urllib.request, json, time, csv, os, sys
 from datetime import datetime, timezone
 
-T_ENTRY   = 180     # s: momento de postear el bid
+MARKET    = "both"  # "15m" | "5m" | "both" — los ganadores operan ambos mercados
+ENTRY     = {"5m": 195, "15m": 315}  # s: entrada POR MERCADO (mediana de los ganadores)
 BID_OFFSET= 0.02    # postear 2¢ por debajo del precio del lado barato
 CANCEL    = 5       # $: cancelar si BTC continúa el spike más de esto
 SPIKE_MAX = 8       # $: solo operar spikes diminutos
 POLL      = 4       # s entre sondeos
 LOG = os.path.join(os.path.dirname(__file__), "maker_paper_log.csv")
+def entry_of(wlen): return ENTRY["15m"] if wlen>=900 else ENTRY["5m"]
 
 def get(url, tries=2):
     for i in range(tries):
@@ -64,14 +66,16 @@ def current_window(seen):
     for t in feed:
         slug=t.get("slug","") or ""
         if "btc-updown" not in slug: continue
+        if MARKET!="both" and f"-{MARKET}-" not in slug: continue   # 15m only por defecto
         cid=t.get("conditionId")
         if cid in seen: continue
         try: ws=int(slug.split("-")[-1])
         except Exception: continue
         wlen=900 if "-15m-" in slug else 300
+        te=entry_of(wlen)
         if ws+wlen <= now()+40: continue           # ya casi cerrada
-        if now() > ws + T_ENTRY - 5: continue       # ya pasó el momento de postear
-        return {"cid":cid,"ws":ws,"wlen":wlen,"slug":slug}
+        if now() > ws + te - 5: continue            # ya pasó el momento de postear
+        return {"cid":cid,"ws":ws,"wlen":wlen,"slug":slug,"te":te}
     return None
 
 def log(row):
@@ -82,11 +86,11 @@ def log(row):
         w.writerow(row)
 
 def run_window(win):
-    cid,ws,wlen,slug=win["cid"],win["ws"],win["wlen"],win["slug"]
+    cid,ws,wlen,slug,te=win["cid"],win["ws"],win["wlen"],win["slug"],win["te"]
     tk=market_tokens(cid)
     if not tk: return
-    print(f"\n── {slug} (ventana {wlen//60}m) — esperando a los {T_ENTRY}s")
-    while now() < ws+T_ENTRY: time.sleep(2)
+    print(f"\n── {slug} (ventana {wlen//60}m) — esperando a los {te}s")
+    while now() < ws+te: time.sleep(2)
     o=spot_at(ws); e=spot()
     if o is None or e is None: return
     spike=e-o
@@ -116,7 +120,7 @@ def run_window(win):
                 h=t.get("transactionHash","")+str(t.get("timestamp"))
                 if h in seen: continue
                 seen.add(h)
-                if t.get("outcome")==cheap and float(t.get("price") or 1)<=bid and int(t.get("timestamp") or 0)>=ws+T_ENTRY:
+                if t.get("outcome")==cheap and float(t.get("price") or 1)<=bid and int(t.get("timestamp") or 0)>=ws+te:
                     filled=True; status="filled"; print(f"   FILL @ {bid}"); break
         if filled: break
         time.sleep(POLL)
