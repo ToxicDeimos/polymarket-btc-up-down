@@ -124,9 +124,12 @@ def run_window(win):
                     filled=True; status="filled"; print(f"   FILL @ {bid}"); break
         if filled: break
         time.sleep(POLL)
-    # resolver
-    while now() < ws+wlen+90: time.sleep(10)
-    win_side=winner(cid)
+    # resolver: esperar al cierre y reintentar hasta que resuelva (o +180s)
+    while now() < ws+wlen+5: time.sleep(5)
+    win_side=None
+    while now() < ws+wlen+180 and win_side is None:
+        win_side=winner(cid)
+        if win_side is None: time.sleep(15)
     won = 1 if (filled and win_side==cheap) else (0 if filled else "")
     print(f"   -> {status} | winner {win_side} | won {won}")
     log([ws,slug,round(spike,1),cheap,cprice,bid,status,bid if filled else "",win_side or "",won])
