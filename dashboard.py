@@ -206,6 +206,18 @@ def api_maker():
     by_bucket = {b: _maker_stats([f for f in fills if f.get("cheap_price") and bucket(f) == b])
                  for b in ("<30c", "30-40c", ">=40c")}
 
+    # Curva de P&L acumulado por $1 apostado, por bucket, en orden cronológico de fill.
+    # Cada bucket arrastra su último valor cuando no tiene fill en ese paso → 3 líneas alineadas.
+    res_sorted = sorted(fills, key=lambda r: int(r["ws"]))
+    cum = {"<30c": 0.0, "30-40c": 0.0, ">=40c": 0.0}
+    curve = {"labels": [], "series": {"<30c": [], "30-40c": [], ">=40c": []}}
+    for i, r in enumerate(res_sorted, 1):
+        b = bucket(r)
+        cum[b] += (1 / float(r["bid"]) - 1) if r.get("won") == "1" else -1
+        curve["labels"].append(i)
+        for k in curve["series"]:
+            curve["series"][k].append(round(cum[k], 3))
+
     if overall and overall["n"] >= 20:
         if overall["ci_lo"] > overall["avg_bid"]:
             verdict = ("real", "Capturamos el edge de ejecución (WIN > bid, significativo).")
@@ -235,6 +247,7 @@ def api_maker():
             "verdict": {"kind": verdict[0], "text": verdict[1]},
         },
         "trades": trades,
+        "curve": curve,
     })
 
 

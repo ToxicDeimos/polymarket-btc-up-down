@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Maker Paper Bot (DRY)</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <style>
   :root {
     --bg:#0d1117; --card:#161b22; --border:#30363d;
@@ -92,6 +93,18 @@
   </div>
 </div>
 
+<!-- EV acumulado por bucket -->
+<div class="section">
+  <div class="card">
+    <h2>EV acumulado por bucket de precio — ¿se ensancha la separación?</h2>
+    <div style="height:260px"><canvas id="ev-chart"></canvas></div>
+    <div class="sub" style="margin-top:8px">
+      P&amp;L realizado por cada $1 apostado, sumado en orden de fill. Si <span class="green">≥40¢</span>
+      sube y <span class="red">&lt;30¢</span> baja, se confirma que el edge vive en los fades cerca del coinflip.
+    </div>
+  </div>
+</div>
+
 <!-- Trades -->
 <div class="section">
   <div class="card" style="overflow-x:auto">
@@ -112,6 +125,22 @@
 <script>
 const $ = id => document.getElementById(id);
 const num = v => (v===null||v===undefined||v==="") ? null : Number(v);
+
+// Mini-gráfica de EV/P&L acumulado por bucket
+const evChart = new Chart(document.getElementById('ev-chart').getContext('2d'), {
+  type:'line',
+  data:{ labels:[], datasets:[
+    { label:'≥40¢ (coinflip)', data:[], borderColor:'#3fb950', backgroundColor:'rgba(63,185,80,.08)', tension:.2, pointRadius:2, fill:false },
+    { label:'30-40¢',          data:[], borderColor:'#d29922', tension:.2, pointRadius:0, fill:false },
+    { label:'<30¢ (underdog)', data:[], borderColor:'#f85149', tension:.2, pointRadius:2, fill:false },
+  ]},
+  options:{ responsive:true, maintainAspectRatio:false,
+    plugins:{ legend:{ labels:{ color:'#8b949e' } } },
+    scales:{
+      y:{ grid:{color:'#21262d'}, ticks:{color:'#8b949e'}, title:{display:true,text:'P&L acum. / $1 apostado',color:'#8b949e'} },
+      x:{ grid:{color:'#21262d'}, ticks:{color:'#8b949e', maxTicksLimit:10}, title:{display:true,text:'nº de fill',color:'#8b949e'} }
+    } }
+});
 
 function statCell(s){ return s ? `${s.win_rate}% <span class="muted">(${s.n})</span>` : '—'; }
 
@@ -172,6 +201,14 @@ async function refresh(){
       statRow('&lt;30¢','down',s.by_bucket['<30c']) +
       statRow('30-40¢','no_fill',s.by_bucket['30-40c']) +
       statRow('≥40¢','up',s.by_bucket['>=40c']);
+
+    if(d.curve){
+      evChart.data.labels = d.curve.labels;
+      evChart.data.datasets[0].data = d.curve.series['>=40c'];
+      evChart.data.datasets[1].data = d.curve.series['30-40c'];
+      evChart.data.datasets[2].data = d.curve.series['<30c'];
+      evChart.update('none');
+    }
 
     const tb = $('trades');
     if(!d.trades.length){ $('trades-empty').style.display='block'; tb.innerHTML=''; }
