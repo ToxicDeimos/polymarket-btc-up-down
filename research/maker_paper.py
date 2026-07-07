@@ -29,7 +29,11 @@ CANCEL_FLOOR = 5       # suelo $ del umbral de cancelación
 POLL       = 4         # s entre sondeos
 LOG = os.path.join(os.path.dirname(__file__), "maker_paper_log.csv")
 HEADER = ["ws","slug","spike","typ_move","spike_max","cheap","cheap_price","bid",
-          "status","fill_price","winner","won"]
+          "status","fill_price","winner","won","cid"]
+OLD_HEADERS = [   # esquemas previos conocidos → se MIGRAN (añadir cols vacías), no se archivan
+    ["ws","slug","spike","typ_move","spike_max","cheap","cheap_price","bid",
+     "status","fill_price","winner","won"],
+]
 def entry_of(wlen): return ENTRY["15m"] if wlen>=900 else ENTRY["5m"]
 
 def get(url, tries=2):
@@ -110,14 +114,21 @@ def current_window(seen):
     return None
 
 def ensure_log():
-    """Si el log existente tiene otro esquema (versión vieja), lo archiva y empieza limpio.
-    Evita mezclar datos pre-fix (otro filtro) con post-fix — contaminaría el veredicto."""
-    if os.path.exists(LOG):
-        with open(LOG,encoding="utf-8") as f: first=f.readline().strip()
-        if first!=",".join(HEADER):
-            bak=LOG.replace(".csv",f"_old_{int(time.time())}.csv")
-            os.rename(LOG,bak)
-            print(f"log con esquema viejo archivado -> {os.path.basename(bak)}")
+    """Adapta el log al esquema actual. Si es un esquema previo CONOCIDO, MIGRA (añade las
+    columnas nuevas vacías, conserva todos los datos). Si es incompatible, lo archiva."""
+    if not os.path.exists(LOG): return
+    with open(LOG,encoding="utf-8") as f: first=f.readline().strip()
+    if first==",".join(HEADER): return
+    if first.split(",") in OLD_HEADERS:
+        rows=list(csv.DictReader(open(LOG,encoding="utf-8")))
+        with open(LOG,"w",newline="",encoding="utf-8") as f:
+            w=csv.DictWriter(f,fieldnames=HEADER); w.writeheader()
+            for r in rows: w.writerow({k:r.get(k,"") for k in HEADER})
+        print(f"log migrado a esquema nuevo (+cid), {len(rows)} filas conservadas")
+    else:
+        bak=LOG.replace(".csv",f"_old_{int(time.time())}.csv")
+        os.rename(LOG,bak)
+        print(f"log incompatible archivado -> {os.path.basename(bak)}")
 
 def log(row):
     new=not os.path.exists(LOG)
@@ -137,12 +148,12 @@ def run_window(win):
     spike=e-o
     typ=typ_move(te)
     if typ is None:
-        print("   skip: sin vol (API)"); log([ws,slug,round(spike,1),"","","","","","skip_novol","","",""]); return
+        print("   skip: sin vol (API)"); log([ws,slug,round(spike,1),"","","","","","skip_novol","","","",cid]); return
     spike_max  = max(SPIKE_FLOOR,  SPIKE_K*typ)
     cancel_thr = max(CANCEL_FLOOR, CANCEL_K*typ)
     if abs(spike)>spike_max:
         print(f"   skip: spike ${spike:+.0f} > umbral ${spike_max:.0f} (típico ${typ:.0f})")
-        log([ws,slug,round(spike,1),round(typ,1),round(spike_max,1),"","","","skip_spike","","",""]); return
+        log([ws,slug,round(spike,1),round(typ,1),round(spike_max,1),"","","","skip_spike","","","",cid]); return
     ua,ub=book(tk["Up"]); da,db=book(tk["Down"])
     if None in (ua,da): return
     cheap = "Up" if ua<da else "Down"
@@ -150,7 +161,7 @@ def run_window(win):
     bid = round(cprice-BID_OFFSET,3)
     if not (0.15<=bid<=0.48):
         print(f"   skip: bid {bid} fuera de rango")
-        log([ws,slug,round(spike,1),round(typ,1),round(spike_max,1),cheap,cprice,bid,"skip_price","","",""]); return
+        log([ws,slug,round(spike,1),round(typ,1),round(spike_max,1),cheap,cprice,bid,"skip_price","","","",cid]); return
     print(f"   POST bid {bid} en {cheap} (ask {cprice}, spike ${spike:+.0f}, típico ${typ:.0f}, cancel>${cancel_thr:.0f})")
     seen=set(); filled=False; status="no_fill"
     while now() < ws+wlen-5:
@@ -184,7 +195,7 @@ def run_window(win):
     else:                   won=0
     print(f"   -> {status} | winner {win_side} | won {won}")
     log([ws,slug,round(spike,1),round(typ,1),round(spike_max,1),cheap,cprice,bid,
-         status,bid if filled else "",win_side or "",won])
+         status,bid if filled else "",win_side or "",won,cid])
 
 def main():
     print("="*60+"\n  MAKER PAPER BOT (DRY) — fills reales + selección adversa\n"+"="*60)
