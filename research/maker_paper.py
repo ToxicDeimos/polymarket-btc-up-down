@@ -84,7 +84,10 @@ def winner(cid):
     return None
 
 def is_target(slug):
-    """Solo 5m y 15m — excluir 4h/1h/diarios que también empiezan por 'btc-updown'."""
+    """Solo BTC 5m y 15m — excluir otras cripto (eth/sol/xrp-updown) y otras ventanas
+    (4h/1h/diario). El spike/vol se calculan con BTC de Binance: aplicarlos a otra moneda
+    sería basura."""
+    if not slug.startswith("btc-updown-"): return False
     if "-5m-"  in slug: return MARKET in ("both","5m")
     if "-15m-" in slug: return MARKET in ("both","15m")
     return False

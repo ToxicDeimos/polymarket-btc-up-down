@@ -5,11 +5,15 @@ try: sys.stdout.reconfigure(encoding="utf-8")
 except: pass
 P=os.path.join(os.path.dirname(__file__),"maker_paper_log.csv")
 if len(sys.argv)>1: P=sys.argv[1]
-rows=list(csv.DictReader(open(P,encoding="utf-8")))
+allrows=list(csv.DictReader(open(P,encoding="utf-8")))
+rows=[r for r in allrows if "btc-updown" in r["slug"]]   # SOLO BTC (ignora alt ya logueadas)
 n=len(rows)
 st=Counter(r["status"] for r in rows)
-print(f"ventanas registradas: {n}")
+print(f"ventanas registradas (BTC): {n}   (descartadas no-BTC: {len(allrows)-n})")
 print(f"  estados: {dict(st)}")
+unresolved=[r for r in rows if r["status"]=="filled" and r["won"] not in ("0","1")]
+if unresolved:
+    print(f"  ⚠ {len(unresolved)} fills SIN resolver — corre primero:  python resolve_log.py")
 
 def mkt(r): return "15m" if "-15m-" in r["slug"] else "5m"
 posted=[r for r in rows if r["status"] in ("filled","no_fill","cancelled")]
@@ -35,7 +39,11 @@ def report(fs, label):
 if len(fills)>=20:
     print()
     r=report(fills,"TODOS")
+    print("  — por mercado:")
     for m in ("5m","15m"): report([f for f in fills if mkt(f)==m], m)
+    print("  — por precio del lado barato (coinflip vs underdog — dónde vive el edge):")
+    for lo,hi,lab in [(0,0.30,"<30c"),(0.30,0.40,"30-40c"),(0.40,1.0,">=40c")]:
+        report([f for f in fills if lo<=float(f["cheap_price"])<hi], lab)
     wr,se,ap=r
     print("\n  VEREDICTO:")
     if   wr-1.96*se>ap: print("    → CAPTURAMOS el edge de ejecución (win > bid, significativo). REAL.")
