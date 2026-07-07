@@ -10,6 +10,7 @@ venv/
 
 # Datos generados en runtime (no son código fuente)
 results.csv
+results_*.csv          # archivos históricos (pre_fade, pre_volfix, ...) — viven en la Pi
 prices.csv
 brain_stats.json
 status.json
