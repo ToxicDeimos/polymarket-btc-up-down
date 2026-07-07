@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Maker Paper Bot (DRY)</title>
+<style>
+  :root {
+    --bg:#0d1117; --card:#161b22; --border:#30363d;
+    --green:#3fb950; --red:#f85149; --yellow:#d29922;
+    --blue:#58a6ff; --purple:#bc8cff; --text:#e6edf3; --muted:#8b949e;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:var(--bg); color:var(--text); font-family:'Segoe UI',system-ui,sans-serif; font-size:14px; }
+  a { color:var(--blue); text-decoration:none; }
+  a:hover { text-decoration:underline; }
+  h1 { font-size:18px; font-weight:600; }
+  h2 { font-size:13px; font-weight:600; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); margin-bottom:12px; }
+
+  .header { padding:16px 24px; border-bottom:1px solid var(--border); display:flex; align-items:center; gap:16px; }
+  .dot { width:8px; height:8px; border-radius:50%; }
+  .dot.on { background:var(--green); box-shadow:0 0 6px var(--green); }
+  .dot.off { background:var(--muted); }
+  #last-update { font-size:11px; color:var(--muted); margin-left:auto; }
+
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:12px; padding:16px 24px; }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:8px; padding:16px; }
+  .card .val { font-size:24px; font-weight:700; margin-top:4px; }
+  .card .sub { font-size:11px; color:var(--muted); margin-top:2px; }
+  .green{color:var(--green);} .red{color:var(--red);} .blue{color:var(--blue);} .yellow{color:var(--yellow);} .muted{color:var(--muted);}
+
+  .section { padding:0 24px 24px; }
+  .two-col { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+  @media(max-width:900px){ .two-col{ grid-template-columns:1fr; } }
+
+  .verdict { margin:0 24px 16px; padding:14px 18px; border-radius:8px; border:1px solid var(--border); font-weight:600; }
+  .verdict.real    { background:#12261a; color:var(--green);  border-color:#1f6f3a; }
+  .verdict.maybe   { background:#26230f; color:var(--yellow); border-color:#6f5a1f; }
+  .verdict.adverse { background:#2a1416; color:var(--red);    border-color:#6f2530; }
+  .verdict.wait    { background:#161b22; color:var(--muted); }
+
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th { text-align:left; padding:8px 12px; border-bottom:1px solid var(--border); color:var(--muted); font-weight:500; font-size:11px; text-transform:uppercase; }
+  td { padding:7px 12px; border-bottom:1px solid #21262d; font-variant-numeric:tabular-nums; }
+  tr:last-child td { border-bottom:none; }
+  tr:hover td { background:#1c2128; }
+
+  .pill { display:inline-block; padding:1px 7px; border-radius:10px; font-size:11px; font-weight:600; }
+  .pill.up{background:#1f3a2e;color:var(--green);} .pill.down{background:#3a1f1f;color:var(--red);}
+  .pill.filled{background:#1a2a4a;color:var(--blue);} .pill.no_fill{background:#21262d;color:var(--muted);}
+  .pill.cancelled{background:#2a2a1a;color:var(--yellow);}
+  .pill.win{background:#1f3a2e;color:var(--green);} .pill.lose{background:#3a1f1f;color:var(--red);} .pill.pend{background:#21262d;color:var(--muted);}
+  .pill.m5{background:#1a2a4a;color:var(--blue);} .pill.m15{background:#2a1f3a;color:var(--purple);}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="dot off" id="dot"></div>
+  <h1>Maker Paper Bot <span class="muted" style="font-weight:400">(DRY · ejecución maker)</span></h1>
+  <a href="/">← bot principal</a>
+  <span id="last-update">—</span>
+</div>
+
+<!-- KPIs -->
+<div class="grid">
+  <div class="card"><h2>Ventanas BTC</h2><div class="val" id="k-n">—</div><div class="sub" id="k-disc">—</div></div>
+  <div class="card"><h2>Posteadas</h2><div class="val blue" id="k-posted">—</div><div class="sub">no skip</div></div>
+  <div class="card"><h2>Fill rate</h2><div class="val" id="k-fillrate">—</div><div class="sub" id="k-filled">—</div></div>
+  <div class="card"><h2>Fills resueltos</h2><div class="val" id="k-resolved">—</div><div class="sub" id="k-pending">—</div></div>
+  <div class="card"><h2>WIN de fills</h2><div class="val" id="k-wr">—</div><div class="sub" id="k-ci">vs bid medio</div></div>
+  <div class="card"><h2>EV / fill</h2><div class="val" id="k-ev">—</div><div class="sub">win/precio − 1</div></div>
+</div>
+
+<!-- Veredicto -->
+<div class="verdict wait" id="verdict">—</div>
+
+<!-- Desgloses -->
+<div class="section">
+  <div class="two-col">
+    <div class="card">
+      <h2>Por mercado</h2>
+      <table><thead><tr><th>Mercado</th><th>Fills</th><th>WIN</th><th>Bid medio</th><th>EV</th></tr></thead>
+        <tbody id="by-market"></tbody></table>
+    </div>
+    <div class="card">
+      <h2>Por precio del lado barato — ¿dónde vive el edge?</h2>
+      <table><thead><tr><th>Precio barato</th><th>Fills</th><th>WIN</th><th>Bid medio</th><th>EV</th></tr></thead>
+        <tbody id="by-bucket"></tbody></table>
+      <div class="sub" style="margin-top:8px">Hipótesis: el edge está en ≥40¢ (fades cerca del coinflip), no en underdogs profundos.</div>
+    </div>
+  </div>
+</div>
+
+<!-- Trades -->
+<div class="section">
+  <div class="card" style="overflow-x:auto">
+    <h2>Trades (posteados, más recientes primero)</h2>
+    <table>
+      <thead><tr>
+        <th>Hora</th><th>Mkt</th><th>Spike</th><th>Típico</th><th>Lado barato</th>
+        <th>Bid</th><th>Estado</th><th>Ganador</th><th>Resultado</th>
+      </tr></thead>
+      <tbody id="trades"></tbody>
+    </table>
+    <div class="sub" id="trades-empty" style="margin-top:8px; display:none">
+      Sin trades aún. Los ganadores aparecen tras correr <code>resolve_log.py</code>.
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const num = v => (v===null||v===undefined||v==="") ? null : Number(v);
+
+function statCell(s){ return s ? `${s.win_rate}% <span class="muted">(${s.n})</span>` : '—'; }
+
+function statRow(label, cls, s){
+  if(!s) return `<tr><td><span class="pill ${cls}">${label}</span></td><td colspan="4" class="muted">sin fills</td></tr>`;
+  const wrColor = s.win_rate > s.avg_bid ? 'green' : 'red';
+  const evColor = s.ev >= 0 ? 'green' : 'red';
+  return `<tr>
+    <td><span class="pill ${cls}">${label}</span></td>
+    <td>${s.n}</td>
+    <td class="${wrColor}">${s.win_rate}% <span class="muted">(${s.ci_lo}-${s.ci_hi})</span></td>
+    <td class="muted">${s.avg_bid}%</td>
+    <td class="${evColor}">${s.ev>=0?'+':''}${s.ev}%</td>
+  </tr>`;
+}
+
+function fmtSpike(v){ v=num(v); return v===null?'—':`${v>=0?'+':''}$${v.toFixed(0)}`; }
+
+async function refresh(){
+  try{
+    const d = await fetch('/api/maker').then(r=>r.json());
+    const s = d.summary;
+    $('dot').className = 'dot on';
+    $('last-update').textContent = `actualizado ${new Date().toLocaleTimeString()}`;
+
+    if(!s || !s.n){
+      $('k-n').textContent='0';
+      $('trades-empty').style.display='block';
+      return;
+    }
+
+    $('k-n').textContent = s.n;
+    $('k-disc').textContent = s.discarded ? `${s.discarded} no-BTC descartadas` : 'solo BTC';
+    $('k-posted').textContent = s.posted;
+    $('k-fillrate').textContent = `${s.fill_rate}%`;
+    $('k-filled').textContent = `${s.filled} fills / ${s.posted}`;
+    $('k-resolved').textContent = s.fills_resolved;
+    $('k-pending').textContent = s.pending ? `${s.pending} sin resolver` : 'todos resueltos';
+
+    const o = s.overall;
+    if(o){
+      $('k-wr').textContent = `${o.win_rate}%`;
+      $('k-wr').className = `val ${o.win_rate>o.avg_bid?'green':'red'}`;
+      $('k-ci').textContent = `IC ${o.ci_lo}-${o.ci_hi}% · bid ${o.avg_bid}%`;
+      $('k-ev').textContent = `${o.ev>=0?'+':''}${o.ev}%`;
+      $('k-ev').className = `val ${o.ev>=0?'green':'red'}`;
+    } else {
+      $('k-wr').textContent='—'; $('k-ev').textContent='—';
+    }
+
+    const v = s.verdict;
+    $('verdict').className = `verdict ${v.kind}`;
+    $('verdict').textContent = v.text;
+
+    $('by-market').innerHTML =
+      statRow('5m','m5',s.by_market['5m']) + statRow('15m','m15',s.by_market['15m']);
+    $('by-bucket').innerHTML =
+      statRow('&lt;30¢','down',s.by_bucket['<30c']) +
+      statRow('30-40¢','no_fill',s.by_bucket['30-40c']) +
+      statRow('≥40¢','up',s.by_bucket['>=40c']);
+
+    const tb = $('trades');
+    if(!d.trades.length){ $('trades-empty').style.display='block'; tb.innerHTML=''; }
+    else {
+      $('trades-empty').style.display='none';
+      tb.innerHTML = d.trades.map(t=>{
+        const hora = new Date(t.ws*1000).toLocaleTimeString('es',{hour:'2-digit',minute:'2-digit'});
+        const mkt = t.market==='15m' ? '<span class="pill m15">15m</span>' : '<span class="pill m5">5m</span>';
+        const cheap = t.cheap ? `<span class="pill ${t.cheap==='Up'?'up':'down'}">${t.cheap}</span> @${t.cheap_price}` : '—';
+        const stCls = t.status||'no_fill';
+        const estado = `<span class="pill ${stCls}">${(t.status||'').replace('_',' ')}</span>`;
+        const winner = t.winner ? `<span class="pill ${t.winner==='Up'?'up':'down'}">${t.winner}</span>` : '<span class="pill pend">?</span>';
+        let res='—';
+        if(t.status==='filled'){
+          if(t.won==='1') res='<span class="pill win">GANÓ</span>';
+          else if(t.won==='0') res='<span class="pill lose">perdió</span>';
+          else res='<span class="pill pend">pendiente</span>';
+        }
+        return `<tr>
+          <td>${hora}</td><td>${mkt}</td>
+          <td>${fmtSpike(t.spike)}</td><td class="muted">$${num(t.typ)?.toFixed(0)??'—'}</td>
+          <td>${cheap}</td><td>${t.bid||'—'}</td>
+          <td>${estado}</td><td>${winner}</td><td>${res}</td>
+        </tr>`;
+      }).join('');
+    }
+  }catch(e){ $('dot').className='dot off'; }
+}
+
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>

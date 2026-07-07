@@ -5,7 +5,9 @@ Abre: http://localhost:5000
 """
 import csv
 import json
+import math
 import os
+import statistics
 from flask import Flask, jsonify, render_template
 
 app = Flask(__name__)
@@ -15,6 +17,7 @@ STATUS_FILE  = os.path.join(BASE, "status.json")
 RESULTS_FILE = os.path.join(BASE, "results.csv")
 PRICES_FILE  = os.path.join(BASE, "prices.csv")
 BRAIN_FILE   = os.path.join(BASE, "brain_stats.json")
+MAKER_FILE   = os.path.join(BASE, "research", "maker_paper_log.csv")
 
 
 # ── Rutas ─────────────────────────────────────────────────────────────────────
@@ -148,6 +151,91 @@ def api_training():
         })
     except Exception as e:
         return jsonify({"error": str(e)})
+
+
+# ── Maker Paper Bot (DRY) ─────────────────────────────────────────────────────
+
+@app.route("/maker")
+def maker():
+    return render_template("maker.html")
+
+
+def _maker_mkt(r):
+    return "15m" if "-15m-" in r.get("slug", "") else "5m"
+
+
+def _maker_stats(fills: list) -> dict | None:
+    """WIN, IC95%, bid medio (break-even) y EV/fill de un grupo de fills resueltos."""
+    n = len(fills)
+    if n == 0:
+        return None
+    wins = sum(1 for r in fills if r.get("won") == "1")
+    bids = [float(r["bid"]) for r in fills if r.get("bid")]
+    wr = wins / n
+    ap = statistics.mean(bids) if bids else 0.0
+    se = math.sqrt(wr * (1 - wr) / n)
+    ev = sum((1 / float(r["bid"]) - 1) if r.get("won") == "1" else -1 for r in fills) / n
+    return {
+        "n": n, "wins": wins, "win_rate": round(wr * 100, 1),
+        "ci_lo": round(max(0, wr - 1.96 * se) * 100, 1),
+        "ci_hi": round(min(1, wr + 1.96 * se) * 100, 1),
+        "avg_bid": round(ap * 100, 1), "ev": round(ev * 100, 1),
+    }
+
+
+@app.route("/api/maker")
+def api_maker():
+    allrows = _read_csv(MAKER_FILE)
+    rows = [r for r in allrows if "btc-updown" in (r.get("slug") or "")]
+    if not rows:
+        return jsonify({"summary": {"n": 0}, "trades": []})
+
+    from collections import Counter
+    st = Counter(r.get("status", "") for r in rows)
+    posted     = [r for r in rows if r.get("status") in ("filled", "no_fill", "cancelled")]
+    filled_all = [r for r in rows if r.get("status") == "filled"]
+    fills      = [r for r in filled_all if r.get("won") in ("0", "1")]     # resueltos
+    pending    = [r for r in filled_all if r.get("won") not in ("0", "1")]
+
+    def bucket(r):
+        p = float(r["cheap_price"])
+        return "<30c" if p < 0.30 else ("30-40c" if p < 0.40 else ">=40c")
+
+    overall   = _maker_stats(fills)
+    by_market = {m: _maker_stats([f for f in fills if _maker_mkt(f) == m]) for m in ("5m", "15m")}
+    by_bucket = {b: _maker_stats([f for f in fills if f.get("cheap_price") and bucket(f) == b])
+                 for b in ("<30c", "30-40c", ">=40c")}
+
+    if overall and overall["n"] >= 20:
+        if overall["ci_lo"] > overall["avg_bid"]:
+            verdict = ("real", "Capturamos el edge de ejecución (WIN > bid, significativo).")
+        elif overall["win_rate"] > overall["avg_bid"]:
+            verdict = ("maybe", "Positivo pero no significativo — deja correr (más fills).")
+        else:
+            verdict = ("adverse", "Selección adversa: nos llenan en los perdedores.")
+    else:
+        verdict = ("wait", f"Aún pocos fills ({overall['n'] if overall else 0}/20) para veredicto.")
+
+    def trade(r):
+        return {
+            "ws": int(r["ws"]), "market": _maker_mkt(r),
+            "spike": r.get("spike"), "typ": r.get("typ_move"), "spike_max": r.get("spike_max"),
+            "cheap": r.get("cheap"), "cheap_price": r.get("cheap_price"), "bid": r.get("bid"),
+            "status": r.get("status"), "winner": r.get("winner"), "won": r.get("won"),
+        }
+    trades = [trade(r) for r in posted][-100:][::-1]   # más recientes primero
+
+    return jsonify({
+        "summary": {
+            "n": len(rows), "discarded": len(allrows) - len(rows), "status": dict(st),
+            "posted": len(posted), "filled": len(filled_all),
+            "fill_rate": round(len(filled_all) / len(posted) * 100, 1) if posted else 0,
+            "fills_resolved": len(fills), "pending": len(pending),
+            "overall": overall, "by_market": by_market, "by_bucket": by_bucket,
+            "verdict": {"kind": verdict[0], "text": verdict[1]},
+        },
+        "trades": trades,
+    })
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
