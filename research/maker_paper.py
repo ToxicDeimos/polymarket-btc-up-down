@@ -159,7 +159,10 @@ def run_window(win):
     cheap = "Up" if ua<da else "Down"
     cprice = ua if cheap=="Up" else da            # ask del lado barato (referencia)
     bid = round(cprice-BID_OFFSET,3)
-    if not (0.15<=bid<=0.48):
+    # FASE 2 (pre-registrado con 90 fills): SOLO near-coinflip (lado barato >=0.40 -> bid >=0.38).
+    # A 90 fills el bucket >=40c dio EV +9.4% (win 46.7% > bid 42.7%, 45 fills) mientras <40c
+    # perdía significativamente (selección adversa). Estrechamos para test OOS limpio de esa hipótesis.
+    if not (0.38<=bid<=0.48):
         print(f"   skip: bid {bid} fuera de rango")
         log([ws,slug,round(spike,1),round(typ,1),round(spike_max,1),cheap,cprice,bid,"skip_price","","","",cid]); return
     print(f"   POST bid {bid} en {cheap} (ask {cprice}, spike ${spike:+.0f}, típico ${typ:.0f}, cancel>${cancel_thr:.0f})")
