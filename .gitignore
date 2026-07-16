@@ -20,3 +20,4 @@ status.json
 
 # Datos de investigacion (no codigo, se regeneran)
 research/*.csv
+research/lab/
