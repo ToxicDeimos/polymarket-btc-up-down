@@ -206,6 +206,16 @@ def api_maker():
     by_bucket = {b: _maker_stats([f for f in fills if f.get("cheap_price") and bucket(f) == b])
                  for b in ("<30c", "30-40c", ">=40c")}
 
+    # Contexto de cancelled/no_fill: ¿el lado barato GANÓ? (¿el cancel protege o corta ganadores?)
+    def _ctx(status_name):
+        b=[r for r in rows if r.get("status")==status_name and r.get("winner") and r.get("cheap")]
+        if not b: return None
+        won=sum(1 for r in b if r["winner"]==r["cheap"])
+        prices=[float(r["cheap_price"]) for r in b if r.get("cheap_price")]
+        return {"n":len(b), "won_pct":round(won/len(b)*100,1),
+                "avg_price":round(sum(prices)/len(prices)*100,1) if prices else None}
+    cancelled_ctx=_ctx("cancelled"); nofill_ctx=_ctx("no_fill")
+
     # Curva de P&L acumulado por $1 apostado, por bucket, en orden cronológico de fill.
     # Cada bucket arrastra su último valor cuando no tiene fill en ese paso → 3 líneas alineadas.
     res_sorted = sorted(fills, key=lambda r: int(r["ws"]))
@@ -244,6 +254,7 @@ def api_maker():
             "fill_rate": round(len(filled_all) / len(posted) * 100, 1) if posted else 0,
             "fills_resolved": len(fills), "pending": len(pending),
             "overall": overall, "by_market": by_market, "by_bucket": by_bucket,
+            "cancelled_ctx": cancelled_ctx, "nofill_ctx": nofill_ctx,
             "verdict": {"kind": verdict[0], "text": verdict[1]},
         },
         "trades": trades,

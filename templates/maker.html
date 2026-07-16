@@ -105,6 +105,21 @@
   </div>
 </div>
 
+<!-- Cancels: ¿protegen o cortan ganadores? -->
+<div class="section">
+  <div class="card">
+    <h2>Cancels y no-fills — ¿el cancel protege o corta ganadores?</h2>
+    <table>
+      <thead><tr><th>Estado</th><th>n resueltos</th><th>Lado barato GANÓ</th><th>Precio medio</th><th>Lectura</th></tr></thead>
+      <tbody id="ctx-body"></tbody>
+    </table>
+    <div class="sub" style="margin-top:8px">
+      Si "ganó" ≈ precio medio → el cancel es <b>neutro/dañino</b> en esta zona (corta ganadores al ritmo del
+      mercado y pierde el descuento). Muy por DEBAJO del precio → el cancel <b>sí protege</b>. Decide la fase 3.
+    </div>
+  </div>
+</div>
+
 <!-- Trades -->
 <div class="section">
   <div class="card" style="overflow-x:auto">
@@ -209,6 +224,20 @@ async function refresh(){
       evChart.data.datasets[2].data = d.curve.series['<30c'];
       evChart.update('none');
     }
+
+    function ctxRow(label, cls, c){
+      if(!c) return `<tr><td><span class="pill ${cls}">${label}</span></td><td colspan="4" class="muted">sin datos resueltos</td></tr>`;
+      let lectura='—';
+      if(c.avg_price!==null){
+        if(c.won_pct < c.avg_price - 8)      lectura='<span class="green">PROTEGE (evita perdedores)</span>';
+        else if(c.won_pct > c.avg_price + 3) lectura='<span class="red">CORTA GANADORES (no protege)</span>';
+        else                                 lectura='<span class="yellow">neutro (≈ precio) — pierde el descuento</span>';
+      }
+      return `<tr><td><span class="pill ${cls}">${label}</span></td><td>${c.n}</td>
+        <td>${c.won_pct}%</td><td class="muted">${c.avg_price??'—'}%</td><td>${lectura}</td></tr>`;
+    }
+    $('ctx-body').innerHTML =
+      ctxRow('cancelled','cancelled',s.cancelled_ctx) + ctxRow('no fill','no_fill',s.nofill_ctx);
 
     const tb = $('trades');
     if(!d.trades.length){ $('trades-empty').style.display='block'; tb.innerHTML=''; }
