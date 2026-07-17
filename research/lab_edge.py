@@ -45,11 +45,15 @@ def stats(recs):
     if not n: return None
     wr=sum(r["won"] for r in recs)/n
     ap=sum(r["price"] for r in recs)/n
-    return {"n":n,"win":wr,"price":ap,"ev":wr-ap}
+    cost=sum(r["size"]*r["price"] for r in recs)
+    pnl =sum(r["size"]*(r["won"]-r["price"]) for r in recs)
+    return {"n":n,"win":wr,"price":ap,"ev":wr-ap,"cost":cost,"pnl":pnl,
+            "roi":(pnl/cost if cost else 0),"vol":sum(r["size"] for r in recs)}
 
 def line(label, s):
     if not s: print(f"  {label:>22}  (sin datos)"); return
-    print(f"  {label:>22}  n={s['n']:>4}  win {s['win']:.1%}  precio {s['price']:.1%}  EV/share {s['ev']*100:+.1f}¢")
+    print(f"  {label:>22}  n={s['n']:>4}  win {s['win']:.1%}  precio {s['price']:.1%}  "
+          f"EV/share {s['ev']*100:+.1f}¢  |  ${{$}}: PnL {s['pnl']:>+8.0f} sobre ${s['cost']:>7.0f}  ROI {s['roi']*100:+.1f}%".replace("{$}",""))
 
 def main():
     days=sys.argv[1:] or sorted({os.path.basename(p).split('_')[1][:8] for p in glob.glob(os.path.join(DIR,'fills_*.csv'))})
@@ -65,7 +69,7 @@ def main():
         seen.add(key)
         try:
             t=int(f["ts_trade"]); p=float(f["price"]); slug=f["slug"]; ws=int(slug.split("-")[-1])
-            wlen=900 if "-15m-" in slug else 300
+            sz=float(f.get("size") or 0); wlen=900 if "-15m-" in slug else 300
         except Exception: continue
         if ws+wlen > int(time.time())-2: continue          # ventana no cerrada
         o=spot_at(ws); c=spot_at(ws+wlen); e=spot_at(t)
@@ -78,7 +82,7 @@ def main():
         if intra is not None and abs(intra)>1:
             up_side=(f.get("outcome")=="Up")
             withmom = (up_side and intra>0) or ((not up_side) and intra<0)
-        R.append({"wallet":f["wallet"],"price":p,"won":won,"mkt":"15m" if wlen==900 else "5m",
+        R.append({"wallet":f["wallet"],"price":p,"won":won,"size":sz,"mkt":"15m" if wlen==900 else "5m",
                   "phase":t-ws,"withmom":withmom,"intra":intra})
         time.sleep(0.02)
     if not R: print("sin fills resueltos."); return
@@ -109,10 +113,11 @@ def main():
         w=csv.DictWriter(fo,fieldnames=list(R[0].keys())); w.writeheader(); w.writerows(R)
     print("\n-> lab/edge_resolved.csv")
     g=stats(R)
-    print("\nVEREDICTO:")
-    if g["ev"]>0.02: print(f"  → SUS FILLS SON +EV (win {g['win']:.1%} > precio {g['price']:.1%}) — la señal predice. Reconstruible.")
-    elif g["ev"]>-0.01: print(f"  → break-even — el edge no está en la señal de entrada (¿tamaño? ¿otra cosa?)")
-    else: print(f"  → sus fills pierden en muestra — survivorship o edge fuera de estos trades")
+    print("\nVEREDICTO (ponderado por DINERO, que es lo que cuenta):")
+    print(f"  PnL total {g['pnl']:+.0f} sobre ${g['cost']:.0f} desplegado  →  ROI {g['roi']*100:+.1f}%")
+    if g["roi"]>0.02:   print("  → GANAN EN DINERO aunque por-fill sea break-even: apuestan GRANDE donde ganan. Edge real.")
+    elif g["roi"]>-0.01:print("  → break-even también en dinero — el edge no está en estos trades (¿regímenes? ¿rebates?)")
+    else:               print("  → pierden también en dinero en esta muestra — survivorship o muestra corta/mal régimen")
 
 if __name__=="__main__":
     try: sys.stdout.reconfigure(encoding="utf-8")
