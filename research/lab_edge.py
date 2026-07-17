@@ -83,7 +83,7 @@ def main():
             up_side=(f.get("outcome")=="Up")
             withmom = (up_side and intra>0) or ((not up_side) and intra<0)
         R.append({"wallet":f["wallet"],"price":p,"won":won,"size":sz,"mkt":"15m" if wlen==900 else "5m",
-                  "phase":t-ws,"withmom":withmom,"intra":intra})
+                  "phase":t-ws,"withmom":withmom,"intra":intra,"absmove":round(abs(c-o),1),"day":slug})
         time.sleep(0.02)
     if not R: print("sin fills resueltos."); return
 
@@ -108,6 +108,20 @@ def main():
     for lo,hi in [(0,120),(120,240),(240,600),(600,900)]:
         s=stats([r for r in R if lo<=r["phase"]<hi])
         if s: line(f"{lo}-{hi}s", s)
+
+    print("\n=== ¿EDGE o RÉGIMEN? momentum (A FAVOR) según la FUERZA del movimiento de la ventana ===")
+    print("  (si gana solo en ventanas FUERTES = trend-following/régimen; si gana en SUAVES = edge real)")
+    fav=[r for r in R if r["withmom"] is True]
+    for lo,hi,lab in [(0,15,"suave <$15"),(15,40,"media $15-40"),(40,1e9,"fuerte >$40")]:
+        line(lab, stats([r for r in fav if lo<=r["absmove"]<hi]))
+
+    print("\n=== por DÍA (¿aguanta cada día, o fue uno bueno?) ===")
+    bydays=sorted({r["day"][r["day"].rfind('-')+1:] for r in R})
+    # agrupa por fecha real de la ventana (unix -> día)
+    import datetime as _dt
+    def dstr(r): return _dt.datetime.utcfromtimestamp(int(r["day"].split("-")[-1])).strftime("%m-%d")
+    for d in sorted({dstr(r) for r in R}):
+        line(d, stats([r for r in R if dstr(r)==d]))
 
     with open(os.path.join(DIR,"edge_resolved.csv"),"w",newline="",encoding="utf-8") as fo:
         w=csv.DictWriter(fo,fieldnames=list(R[0].keys())); w.writeheader(); w.writerows(R)
