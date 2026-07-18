@@ -32,7 +32,20 @@ ASKB_MAX = 0.40         # BRAZO B (pre-registrado tras verificar 37 fills con ga
                         # a precio 33.5%): líder DESPRECIADO — divergencia mercado/spot. Zona
                         # 0.40-0.52 sigue excluida (validada negativa, EV −11.8¢).
 LOG = os.path.join(os.path.dirname(__file__), "momentum_paper_log.csv")
-HEADER = ["ws","slug","move","leader","ask","status","winner","won","cid"]
+HEADER = ["ws","slug","move","leader","ask","status","winner","won","cid","res"]
+OLD_HEADERS = [["ws","slug","move","leader","ask","status","winner","won","cid"]]
+
+def ensure_log():
+    """Migra el log a HEADER actual (añade columnas nuevas vacías, conserva todo)."""
+    if not os.path.exists(LOG): return
+    with open(LOG,encoding="utf-8") as f: first=f.readline().strip()
+    if first==",".join(HEADER): return
+    if first.split(",") in OLD_HEADERS:
+        rows=list(csv.DictReader(open(LOG,encoding="utf-8")))
+        with open(LOG,"w",newline="",encoding="utf-8") as f:
+            w=csv.DictWriter(f,fieldnames=HEADER); w.writeheader()
+            for r in rows: w.writerow({k:r.get(k,"") for k in HEADER})
+        print(f"log migrado (+res), {len(rows)} filas conservadas")
 
 def get(url, tries=2):
     for i in range(tries):
@@ -94,7 +107,7 @@ def run_window(win):
     move=e-o
     if not (MOVE_MIN<=abs(move)<=MOVE_MAX):
         print(f"   skip: move ${move:+.0f} fuera de [{MOVE_MIN},{MOVE_MAX}]")
-        log([ws,slug,round(move,1),"","","skip_move","","",cid]); return
+        log([ws,slug,round(move,1),"","","skip_move","","",cid,""]); return
     leader="Up" if move>0 else "Down"
     ask=best_ask(win["toks"][leader])
     if ask is None: return
@@ -102,21 +115,22 @@ def run_window(win):
     elif 0.05<=ask<=ASKB_MAX:      status="taker_b"  # brazo B: líder despreciado (divergencia)
     else:
         print(f"   skip: ask {ask} fuera de zonas A/B")
-        log([ws,slug,round(move,1),leader,ask,"skip_price","","",cid]); return
+        log([ws,slug,round(move,1),leader,ask,"skip_price","","",cid,""]); return
     print(f"   {'TAKER' if status=='taker' else 'TAKER-B'} BUY {leader} @ {ask}  (move ${move:+.0f})")
     # resolución: ganador REAL del CLOB con reintentos largos. Binance de respaldo SOLO en brazo A:
     # el brazo B selecciona ventanas de DIVERGENCIA de oráculo, donde Binance puede fallar.
     while now() < ws+300+5: time.sleep(5)
-    win_side=None; t0=now()
+    win_side=None; res=""; t0=now()
     while now() < t0+360 and win_side is None:
         win_side=winner_clob(cid)
         if win_side is None: time.sleep(15)
-    if win_side is None and status=="taker":
+    if win_side is not None: res="clob"
+    elif status=="taker":
         c=spot_at(ws+300)
-        if c is not None and o is not None: win_side="Up" if c>o else "Down"
+        if c is not None and o is not None: win_side="Up" if c>o else "Down"; res="binance"
     won = "" if win_side is None else (1 if win_side==leader else 0)
-    print(f"   -> winner {win_side} | won {won}")
-    log([ws,slug,round(move,1),leader,ask,status,win_side or "",won,cid])
+    print(f"   -> winner {win_side} ({res or 'sin resolver'}) | won {won}")
+    log([ws,slug,round(move,1),leader,ask,status,win_side or "",won,cid,res])
 
 def analyze():
     if not os.path.exists(LOG): print("sin log aún"); return
@@ -136,6 +150,8 @@ def analyze():
         se=math.sqrt(wr*(1-wr)/n)
         print(f"  {label:>14}  n={n:>3}  win {wr:.1%} (IC {max(0,wr-1.96*se):.1%}-{min(1,wr+1.96*se):.1%})"
               f"  ask medio {ap:.1%}  EV/trade {ev:+.1%}")
+    rsrc=Counter((r.get("res") or "pre-columna") for r in rows if r["status"] in ("taker","taker_b") and r["won"] in ("0","1"))
+    print(f"fuente de resolución de los resueltos: {dict(rsrc)}")
     rep("TODO (A)",T)
     print("  — por |move|:")
     for lo,hi,lab in [(0,15,"suave 8-15"),(15,40,"media 15-40"),(40,99,"fuerte 40-45")]:
@@ -164,6 +180,7 @@ def analyze():
 def main():
     if "--analyze" in sys.argv: analyze(); return
     print("="*60+"\n  MOMENTUM PAPER BOT (DRY) — comprar el líder tarde (5m)\n"+"="*60)
+    ensure_log()
     seen=set()
     while True:
         try:
