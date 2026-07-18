@@ -186,7 +186,10 @@ async function refresh(){
     else{
       $('trades-empty').style.display='none';
       tb.innerHTML = d.trades.map(t=>{
-        const hora=new Date(t.ws*1000).toLocaleTimeString('es',{hour:'2-digit',minute:'2-digit'});
+        const dt=new Date(t.ws*1000);
+        const horaLocal=dt.toLocaleTimeString('es',{hour:'2-digit',minute:'2-digit'});
+        const horaET=dt.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',timeZone:'America/New_York'});
+        const hora=`${horaLocal} <span class="muted" style="font-size:11px">(${horaET} ET)</span>`;
         const mv=Number(t.move);
         const bucket = Math.abs(mv)<15?'suave':(Math.abs(mv)<40?'media':'fuerte');
         const leader = t.leader ? `<span class="pill ${t.leader==='Up'?'up':'down'}">${t.leader}</span>` : '—';
