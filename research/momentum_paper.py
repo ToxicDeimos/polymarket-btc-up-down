@@ -34,8 +34,9 @@ ASKB_MAX = 0.40         # BRAZO B (pre-registrado tras verificar 37 fills con ga
                         # a precio 33.5%): líder DESPRECIADO — divergencia mercado/spot. Zona
                         # 0.40-0.52 sigue excluida (validada negativa, EV −11.8¢).
 LOG = os.path.join(os.path.dirname(__file__), "momentum_paper_log.csv")
-HEADER = ["ws","slug","move","leader","ask","status","winner","won","cid","res"]
-OLD_HEADERS = [["ws","slug","move","leader","ask","status","winner","won","cid"]]
+HEADER = ["ws","slug","move","leader","ask","status","winner","won","cid","res","ask2"]
+OLD_HEADERS = [["ws","slug","move","leader","ask","status","winner","won","cid"],
+               ["ws","slug","move","leader","ask","status","winner","won","cid","res"]]
 
 def ensure_log():
     """Migra el log a HEADER actual (añade columnas nuevas vacías, conserva todo)."""
@@ -138,15 +139,16 @@ def run_window(win):
     move=e-o
     if not (MOVE_MIN<=abs(move)<=MOVE_MAX):
         print(f"   skip: move ${move:+.0f} fuera de [{MOVE_MIN},{MOVE_MAX}]")
-        log([ws,slug,round(move,1),"","","skip_move","","",cid,""]); return
+        log([ws,slug,round(move,1),"","","skip_move","","",cid,"",""]); return
     leader="Up" if move>0 else "Down"
     ask=best_ask(win["toks"][leader])
+    ask2=best_ask(win["toks"]["Down" if leader=="Up" else "Up"])   # lado FADE (sombra contraria)
     if ask is None: return
     if ASK_MIN<=ask<=ASK_MAX:      status="taker"    # brazo A: momentum confirmado
     elif 0.05<=ask<=ASKB_MAX:      status="taker_b"  # brazo B: líder despreciado (divergencia)
     else:
         print(f"   skip: ask {ask} fuera de zonas A/B")
-        log([ws,slug,round(move,1),leader,ask,"skip_price","","",cid,""]); return
+        log([ws,slug,round(move,1),leader,ask,"skip_price","","",cid,"",ask2 or ""]); return
     print(f"   {'TAKER' if status=='taker' else 'TAKER-B'} BUY {leader} @ {ask}  (move ${move:+.0f})")
     # resolución SOLO por el ganador REAL del CLOB (la liquidación de Polymarket, que sigue a
     # Chainlink). El respaldo Binance se ELIMINÓ: medido 92% de acierto = 8% de error, incluso
@@ -160,7 +162,7 @@ def run_window(win):
     if win_side is not None: res="clob"
     won = "" if win_side is None else (1 if win_side==leader else 0)
     print(f"   -> winner {win_side or 'PENDIENTE'} | won {won}")
-    log([ws,slug,round(move,1),leader,ask,status,win_side or "",won,cid,res])
+    log([ws,slug,round(move,1),leader,ask,status,win_side or "",won,cid,res,ask2 or ""])
 
 def analyze():
     if not os.path.exists(LOG): print("sin log aún"); return
@@ -205,6 +207,13 @@ def analyze():
                           (0.82,0.95,"82-95c"),(0.95,1.01,">95c")]:
             rep(lab,[dict(r,won=("1" if r["winner"]==r["leader"] else "0"))
                      for r in S if lo<=float(r["ask"])<hi])
+
+    F=[r for r in rows if r.get("winner") and r.get("leader") and r.get("ask2")]
+    if F:
+        print("\nSOMBRA-FADE (comprar el lado CONTRA el move — mide sus longshots/coinflip fade, SIN operar):")
+        for lo,hi,lab in [(0.0,0.20,"fade <20c (longshot)"),(0.20,0.40,"fade 20-40c"),(0.40,0.55,"fade 40-55c")]:
+            rep(lab,[dict(r,ask=r["ask2"],won=("1" if r["winner"]!=r["leader"] else "0"))
+                     for r in F if lo<=float(r["ask2"])<hi])
 
     B=[r for r in rows if r["status"]=="taker_b" and r["won"] in ("0","1")]
     print(f"\nBRAZO B — líder despreciado <40¢ (pre-registrado: ≥25 resueltos, EV>0; referencia lab 78.4% a 33.5%):")
