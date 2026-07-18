@@ -18,6 +18,7 @@ RESULTS_FILE = os.path.join(BASE, "results.csv")
 PRICES_FILE  = os.path.join(BASE, "prices.csv")
 BRAIN_FILE   = os.path.join(BASE, "brain_stats.json")
 MAKER_FILE   = os.path.join(BASE, "research", "maker_paper_log.csv")
+MOM_FILE     = os.path.join(BASE, "research", "momentum_paper_log.csv")
 
 
 # ── Rutas ─────────────────────────────────────────────────────────────────────
@@ -258,6 +259,92 @@ def api_maker():
             "verdict": {"kind": verdict[0], "text": verdict[1]},
         },
         "trades": trades,
+        "curve": curve,
+    })
+
+
+# ── Momentum Paper Bot (DRY, experimento #3) ──────────────────────────────────
+
+@app.route("/momentum")
+def momentum():
+    return render_template("momentum.html")
+
+
+def _mom_stats(trades: list) -> dict | None:
+    n = len(trades)
+    if n == 0:
+        return None
+    wins = sum(1 for r in trades if r.get("won") == "1")
+    asks = [float(r["ask"]) for r in trades if r.get("ask")]
+    wr = wins / n
+    ap = statistics.mean(asks) if asks else 0.0
+    se = math.sqrt(wr * (1 - wr) / n)
+    ev = sum((1 / float(r["ask"]) - 1) if r.get("won") == "1" else -1 for r in trades) / n
+    return {"n": n, "win_rate": round(wr * 100, 1),
+            "ci_lo": round(max(0, wr - 1.96 * se) * 100, 1),
+            "ci_hi": round(min(1, wr + 1.96 * se) * 100, 1),
+            "avg_ask": round(ap * 100, 1), "ev": round(ev * 100, 1)}
+
+
+def _mom_move_bucket(r):
+    m = abs(float(r["move"]))
+    return "suave" if m < 15 else ("media" if m < 40 else "fuerte")
+
+
+@app.route("/api/momentum")
+def api_momentum():
+    rows = _read_csv(MOM_FILE)
+    if not rows:
+        return jsonify({"summary": {"n": 0}, "trades": [], "curve": None})
+    from collections import Counter
+    st = Counter(r.get("status", "") for r in rows)
+    takers   = [r for r in rows if r.get("status") == "taker"]
+    resolved = [r for r in takers if r.get("won") in ("0", "1")]
+    pending  = len(takers) - len(resolved)
+
+    overall = _mom_stats(resolved)
+    by_move = {b: _mom_stats([r for r in resolved if _mom_move_bucket(r) == b])
+               for b in ("suave", "media", "fuerte")}
+    def askb(r):
+        a = float(r["ask"])
+        return "52-62c" if a < 0.62 else ("62-72c" if a < 0.72 else "72-82c")
+    by_ask = {b: _mom_stats([r for r in resolved if askb(r) == b])
+              for b in ("52-62c", "62-72c", "72-82c")}
+
+    # Veredicto pre-registrado: >=40 resueltos; EV>0; IC a ~80
+    if overall is None or overall["n"] < 40:
+        verdict = ("wait", f"Aún {overall['n'] if overall else 0}/40 trades resueltos para veredicto.")
+    elif overall["win_rate"] > overall["avg_ask"]:
+        if overall["ci_lo"] > overall["avg_ask"]:
+            verdict = ("real", "LA SEÑAL PREDICE (win > ask, significativo). El edge de momentum se transfiere.")
+        else:
+            verdict = ("maybe", "Positivo pero no significativo — seguir hasta ~80 y exigir IC.")
+    else:
+        verdict = ("dead", "≤ break-even con n≥40: 12ª muerte — el edge no se transfiere tal cual.")
+
+    # curva P&L acumulado por $1, por bucket de move
+    res_sorted = sorted(resolved, key=lambda r: int(r["ws"]))
+    cum = {"suave": 0.0, "media": 0.0, "fuerte": 0.0}
+    curve = {"labels": [], "series": {"suave": [], "media": [], "fuerte": []}}
+    for i, r in enumerate(res_sorted, 1):
+        b = _mom_move_bucket(r)
+        cum[b] += (1 / float(r["ask"]) - 1) if r.get("won") == "1" else -1
+        curve["labels"].append(i)
+        for k in curve["series"]:
+            curve["series"][k].append(round(cum[k], 3))
+
+    def trade(r):
+        return {"ws": int(r["ws"]), "move": r.get("move"), "leader": r.get("leader"),
+                "ask": r.get("ask"), "status": r.get("status"),
+                "winner": r.get("winner"), "won": r.get("won")}
+    shown = [r for r in rows if r.get("status") in ("taker", "skip_price")][-100:][::-1]
+
+    return jsonify({
+        "summary": {"n": len(rows), "status": dict(st), "signals": len(takers),
+                    "resolved": len(resolved), "pending": pending,
+                    "overall": overall, "by_move": by_move, "by_ask": by_ask,
+                    "verdict": {"kind": verdict[0], "text": verdict[1]}},
+        "trades": [trade(r) for r in shown],
         "curve": curve,
     })
 
