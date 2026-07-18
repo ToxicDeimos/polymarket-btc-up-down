@@ -26,8 +26,10 @@ import urllib.request, json, time, csv, os, sys, math
 ENTRY    = 240          # s dentro de la ventana 5m (300s)
 MOVE_MIN = 8            # $ |movimiento| mínimo (por debajo, líder≈coinflip sin señal)
 MOVE_MAX = 45           # $ máximo (fuerte>$40 apenas deja margen; corte medido)
-ASK_MIN  = 0.52         # BRAZO A: momentum confirmado (motor 60-80¢ + coinflip alto)
-ASK_MAX  = 0.82
+ASK_MIN  = 0.52         # BRAZO A v2 — zona validada EN NUESTRA FASE (200-280s) con sus fills:
+ASK_MAX  = 0.72         #   52-62¢ EV +44.4¢ (n=6) · 62-72¢ +16.4¢ (n=11) · 72-82¢ −26.3¢ (n=33!)
+                        # v2 = corrección de DERIVACIÓN: el cruce original no condicionaba por fase,
+                        # y a los 240s la banda 72-82¢ es negativa en sus propios datos. Log v1 archivado.
 ASKB_MAX = 0.40         # BRAZO B (pre-registrado tras verificar 37 fills con ganador REAL 78.4%
                         # a precio 33.5%): líder DESPRECIADO — divergencia mercado/spot. Zona
                         # 0.40-0.52 sigue excluida (validada negativa, EV −11.8¢).
@@ -107,10 +109,14 @@ def backfill_pending(verbose=False):
     if not rows: return (0,0)
     filled=fixed=touched=0
     for r in rows:
-        if r.get("status") not in ("taker","taker_b"): continue
+        if r.get("status") not in ("taker","taker_b","skip_price"): continue
         if r.get("res")=="clob": continue
         w=winner_clob(r.get("cid"))
         if w is None: continue
+        if r.get("status")=="skip_price":
+            # SOMBRA: resolver también los skips con líder logueado — mide qué habría pasado
+            # en las zonas que NO operamos (72-82¢ v1, >82¢) sin arriesgar el experimento.
+            r["winner"]=w; r["res"]="clob"; touched+=1; time.sleep(0.1); continue
         won="1" if w==r.get("leader") else "0"
         if r.get("won") not in ("0","1"): filled+=1
         elif r.get("won")!=won:
@@ -191,6 +197,13 @@ def analyze():
         if wr-1.96*se>ap: print("  → LA SEÑAL PREDICE (win>ask, significativo). El edge de momentum es NUESTRO también.")
         else: print("  → positivo pero no significativo — seguir (exigir IC a ~80)")
     else: print("  → ≤break-even: 12ª muerte — el edge no se transfiere. Documentar y cerrar.")
+
+    S=[r for r in rows if r["status"]=="skip_price" and r.get("winner") and r.get("leader") and r.get("ask")]
+    if S:
+        print("\nSOMBRA (skips resueltos — qué habría pasado comprando al líder, SIN operar):")
+        for lo,hi,lab in [(0.72,0.82,"72-82c (v1 excl.)"),(0.82,0.95,"82-95c"),(0.95,1.01,">95c")]:
+            rep(lab,[dict(r,won=("1" if r["winner"]==r["leader"] else "0"))
+                     for r in S if lo<=float(r["ask"])<hi])
 
     B=[r for r in rows if r["status"]=="taker_b" and r["won"] in ("0","1")]
     print(f"\nBRAZO B — líder despreciado <40¢ (pre-registrado: ≥25 resueltos, EV>0; referencia lab 78.4% a 33.5%):")
