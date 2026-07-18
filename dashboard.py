@@ -338,8 +338,8 @@ def api_momentum():
             curve["series"][k].append(round(cum[k], 3))
 
     def trade(r):
-        return {"ws": int(r["ws"]), "move": r.get("move"), "leader": r.get("leader"),
-                "ask": r.get("ask"), "status": r.get("status"),
+        return {"ws": int(r["ws"]), "slug": r.get("slug"), "move": r.get("move"),
+                "leader": r.get("leader"), "ask": r.get("ask"), "status": r.get("status"),
                 "winner": r.get("winner"), "won": r.get("won")}
     shown = [r for r in rows if r.get("status") in ("taker", "taker_b", "skip_price")][-100:][::-1]
 
