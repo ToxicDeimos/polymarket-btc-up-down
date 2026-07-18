@@ -27,6 +27,12 @@ WALLETS = {
 }
 BH = ["ts","slug","cid","side","b1","bs1","b2","bs2","b3","bs3","a1","as1","a2","as2","a3","as3","last"]
 SH = ["ts","price"]
+CH = ["ts","price","updated_at"]
+# Chainlink BTC/USD on-chain (Polygon) — proxy del Data Stream con el que RESUELVE Polymarket.
+# Cadencia ~30s (heartbeat/desviación). Observado en vivo: hasta ~$45 de divergencia vs Binance.
+CL_FEED = "0xc907E116054Ad103354f2D350FD2514433D57F6f"
+RPCS = ["https://polygon-bor-rpc.publicnode.com","https://polygon.drpc.org",
+        "https://polygon-mainnet.public.blastapi.io"]
 FH = ["ts_seen","wallet","ts_trade","slug","cid","trade_side","outcome","price","size","tx"]
 TH = ["ts_seen","proxy","ts_trade","slug","cid","trade_side","outcome","price","size","tx"]
 
@@ -93,6 +99,22 @@ def snap_spot():
     d=get("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT")
     if isinstance(d,dict) and d.get("price"): w("spot",SH,[now(),d["price"]])
 
+def snap_chainlink():
+    """Lee el feed on-chain Chainlink BTC/USD (latestRoundData) vía RPC público gratuito."""
+    payload=json.dumps({"jsonrpc":"2.0","id":1,"method":"eth_call","params":[
+        {"to":CL_FEED,"data":"0xfeaf968c"},"latest"]}).encode()
+    for url in RPCS:
+        try:
+            req=urllib.request.Request(url, data=payload,
+                headers={"Content-Type":"application/json","User-Agent":"lab/1.0"})
+            with urllib.request.urlopen(req, timeout=10) as r: res=json.load(r)
+            h=res["result"][2:]; words=[h[i:i+64] for i in range(0,len(h),64)]
+            price=int(words[1],16)/1e8; upd=int(words[3],16)
+            if 1000<price<1e7:
+                w("chainlink",CH,[now(),round(price,2),upd]); return
+        except Exception:
+            continue
+
 _seen_f=set(); _seen_t=set()
 def snap_fills_tape():
     global _seen_f, _seen_t
@@ -136,6 +158,7 @@ def main():
             refresh_windows()
             snap_books()
             snap_spot()
+            snap_chainlink()
             if once:
                 print("ciclo único OK"); break
             time.sleep(POLL)
