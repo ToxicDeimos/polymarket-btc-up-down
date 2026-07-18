@@ -60,6 +60,10 @@
   <div class="card"><h2>EV / trade</h2><div class="val" id="k-ev">—</div><div class="sub">win/ask − 1</div></div>
   <div class="card"><h2>Progreso veredicto</h2><div class="val" id="k-prog">—</div><div class="sub">≥40 resueltos, EV>0</div></div>
   <div class="card"><h2>Brazo B &lt;40¢</h2><div class="val" id="k-armb">—</div><div class="sub" id="k-armb-sub">líder despreciado · ref lab 78.4%@33.5%</div></div>
+  <div class="card"><h2>P&amp;L simulado</h2><div class="val" id="k-pnl">—</div>
+    <div class="sub">a <input id="stake" type="number" min="0.5" step="0.5" value="2"
+      style="width:52px;background:#0d1117;color:var(--text);border:1px solid var(--border);border-radius:4px;padding:1px 4px">
+      $/trade · <span id="k-pnl-b">brazo B: —</span></div></div>
 </div>
 
 <div class="verdict wait" id="verdict">—</div>
@@ -105,6 +109,8 @@
 
 <script>
 const $ = id => document.getElementById(id);
+$('stake').value = localStorage.getItem('mom_stake') || 2;
+$('stake').addEventListener('change', ()=>{ localStorage.setItem('mom_stake', $('stake').value); refresh(); });
 const pnlChart = new Chart(document.getElementById('pnl-chart').getContext('2d'), {
   type:'line',
   data:{ labels:[], datasets:[
@@ -150,6 +156,15 @@ async function refresh(){
       $('k-ev').className = `val ${o.ev>=0?'green':'red'}`;
       $('k-prog').textContent = `${Math.min(o.n,40)}/40`;
     } else { $('k-wr').textContent='—'; $('k-ev').textContent='—'; $('k-prog').textContent='0/40'; }
+
+    const stake=parseFloat($('stake').value)||2;
+    if(typeof s.pnl1==='number'){
+      const p=s.pnl1*stake, pb=(s.pnl1_b||0)*stake;
+      $('k-pnl').textContent = `${p>=0?'+':'−'}$${Math.abs(p).toFixed(2)}`;
+      $('k-pnl').className = `val ${p>=0?'green':'red'}`;
+      $('k-pnl-b').textContent = `brazo B: ${pb>=0?'+':'−'}$${Math.abs(pb).toFixed(2)}`;
+      $('k-pnl-b').className = pb>=0?'green':'red';
+    }
 
     const b=s.arm_b;
     if(b){

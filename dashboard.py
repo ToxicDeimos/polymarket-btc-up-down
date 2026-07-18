@@ -306,6 +306,8 @@ def api_momentum():
     arm_b = _mom_stats(resolved_b)
     if arm_b: arm_b["pending"] = len(takers_b) - len(resolved_b)
 
+    def _pnl1(rs):   # P&L acumulado por $1 apostado por trade
+        return round(sum((1 / float(r["ask"]) - 1) if r.get("won") == "1" else -1 for r in rs), 3) if rs else 0.0
     overall = _mom_stats(resolved)
     by_move = {b: _mom_stats([r for r in resolved if _mom_move_bucket(r) == b])
                for b in ("suave", "media", "fuerte")}
@@ -348,6 +350,7 @@ def api_momentum():
                     "resolved": len(resolved), "pending": pending,
                     "overall": overall, "by_move": by_move, "by_ask": by_ask,
                     "arm_b": arm_b, "arm_b_signals": len(takers_b),
+                    "pnl1": _pnl1(resolved), "pnl1_b": _pnl1(resolved_b),
                     "verdict": {"kind": verdict[0], "text": verdict[1]}},
         "trades": [trade(r) for r in shown],
         "curve": curve,
