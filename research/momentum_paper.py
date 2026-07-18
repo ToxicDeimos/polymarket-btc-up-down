@@ -201,7 +201,8 @@ def analyze():
     S=[r for r in rows if r["status"]=="skip_price" and r.get("winner") and r.get("leader") and r.get("ask")]
     if S:
         print("\nSOMBRA (skips resueltos — qué habría pasado comprando al líder, SIN operar):")
-        for lo,hi,lab in [(0.72,0.82,"72-82c (v1 excl.)"),(0.82,0.95,"82-95c"),(0.95,1.01,">95c")]:
+        for lo,hi,lab in [(0.40,0.52,"40-52c (conflicto)"),(0.72,0.82,"72-82c (v1 excl.)"),
+                          (0.82,0.95,"82-95c"),(0.95,1.01,">95c")]:
             rep(lab,[dict(r,won=("1" if r["winner"]==r["leader"] else "0"))
                      for r in S if lo<=float(r["ask"])<hi])
 
