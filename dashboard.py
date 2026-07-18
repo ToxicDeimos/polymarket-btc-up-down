@@ -301,6 +301,10 @@ def api_momentum():
     takers   = [r for r in rows if r.get("status") == "taker"]
     resolved = [r for r in takers if r.get("won") in ("0", "1")]
     pending  = len(takers) - len(resolved)
+    takers_b   = [r for r in rows if r.get("status") == "taker_b"]
+    resolved_b = [r for r in takers_b if r.get("won") in ("0", "1")]
+    arm_b = _mom_stats(resolved_b)
+    if arm_b: arm_b["pending"] = len(takers_b) - len(resolved_b)
 
     overall = _mom_stats(resolved)
     by_move = {b: _mom_stats([r for r in resolved if _mom_move_bucket(r) == b])
@@ -337,12 +341,13 @@ def api_momentum():
         return {"ws": int(r["ws"]), "move": r.get("move"), "leader": r.get("leader"),
                 "ask": r.get("ask"), "status": r.get("status"),
                 "winner": r.get("winner"), "won": r.get("won")}
-    shown = [r for r in rows if r.get("status") in ("taker", "skip_price")][-100:][::-1]
+    shown = [r for r in rows if r.get("status") in ("taker", "taker_b", "skip_price")][-100:][::-1]
 
     return jsonify({
         "summary": {"n": len(rows), "status": dict(st), "signals": len(takers),
                     "resolved": len(resolved), "pending": pending,
                     "overall": overall, "by_move": by_move, "by_ask": by_ask,
+                    "arm_b": arm_b, "arm_b_signals": len(takers_b),
                     "verdict": {"kind": verdict[0], "text": verdict[1]}},
         "trades": [trade(r) for r in shown],
         "curve": curve,

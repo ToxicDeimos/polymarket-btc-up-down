@@ -59,6 +59,7 @@
   <div class="card"><h2>WIN</h2><div class="val" id="k-wr">—</div><div class="sub" id="k-ci">vs ask medio (break-even)</div></div>
   <div class="card"><h2>EV / trade</h2><div class="val" id="k-ev">—</div><div class="sub">win/ask − 1</div></div>
   <div class="card"><h2>Progreso veredicto</h2><div class="val" id="k-prog">—</div><div class="sub">≥40 resueltos, EV>0</div></div>
+  <div class="card"><h2>Brazo B &lt;40¢</h2><div class="val" id="k-armb">—</div><div class="sub" id="k-armb-sub">líder despreciado · ref lab 78.4%@33.5%</div></div>
 </div>
 
 <div class="verdict wait" id="verdict">—</div>
@@ -150,6 +151,16 @@ async function refresh(){
       $('k-prog').textContent = `${Math.min(o.n,40)}/40`;
     } else { $('k-wr').textContent='—'; $('k-ev').textContent='—'; $('k-prog').textContent='0/40'; }
 
+    const b=s.arm_b;
+    if(b){
+      $('k-armb').textContent = `${b.win_rate}%`;
+      $('k-armb').className = `val ${b.win_rate>b.avg_ask?'green':'red'}`;
+      $('k-armb-sub').textContent = `n=${b.n} · ask ${b.avg_ask}% · EV ${b.ev>=0?'+':''}${b.ev}%` +
+        (b.pending?` · ${b.pending} pend.`:'') + ' · ref 78.4%@33.5%';
+    } else {
+      $('k-armb').textContent = s.arm_b_signals ? `${s.arm_b_signals} señal(es)` : '—';
+    }
+
     $('verdict').className = `verdict ${s.verdict.kind}`;
     $('verdict').textContent = s.verdict.text;
 
@@ -179,10 +190,12 @@ async function refresh(){
         const mv=Number(t.move);
         const bucket = Math.abs(mv)<15?'suave':(Math.abs(mv)<40?'media':'fuerte');
         const leader = t.leader ? `<span class="pill ${t.leader==='Up'?'up':'down'}">${t.leader}</span>` : '—';
-        const estado = t.status==='taker' ? '<span class="pill taker">taker</span>' : `<span class="pill skip">${t.status.replace('_',' ')}</span>`;
+        const estado = t.status==='taker' ? '<span class="pill taker">taker A</span>'
+                     : t.status==='taker_b' ? '<span class="pill fuerte">taker B</span>'
+                     : `<span class="pill skip">${t.status.replace('_',' ')}</span>`;
         const winner = t.winner ? `<span class="pill ${t.winner==='Up'?'up':'down'}">${t.winner}</span>` : '<span class="pill pend">?</span>';
         let res='—';
-        if(t.status==='taker'){
+        if(t.status==='taker' || t.status==='taker_b'){
           if(t.won==='1') res='<span class="pill win">GANÓ</span>';
           else if(t.won==='0') res='<span class="pill lose">perdió</span>';
           else res='<span class="pill pend">pendiente</span>';

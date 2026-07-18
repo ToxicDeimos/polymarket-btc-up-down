@@ -26,8 +26,11 @@ import urllib.request, json, time, csv, os, sys, math
 ENTRY    = 240          # s dentro de la ventana 5m (300s)
 MOVE_MIN = 8            # $ |movimiento| mínimo (por debajo, líder≈coinflip sin señal)
 MOVE_MAX = 45           # $ máximo (fuerte>$40 apenas deja margen; corte medido)
-ASK_MIN  = 0.52         # zona del líder (motor 60-80¢ + coinflip alto)
+ASK_MIN  = 0.52         # BRAZO A: momentum confirmado (motor 60-80¢ + coinflip alto)
 ASK_MAX  = 0.82
+ASKB_MAX = 0.40         # BRAZO B (pre-registrado tras verificar 37 fills con ganador REAL 78.4%
+                        # a precio 33.5%): líder DESPRECIADO — divergencia mercado/spot. Zona
+                        # 0.40-0.52 sigue excluida (validada negativa, EV −11.8¢).
 LOG = os.path.join(os.path.dirname(__file__), "momentum_paper_log.csv")
 HEADER = ["ws","slug","move","leader","ask","status","winner","won","cid"]
 
@@ -95,22 +98,25 @@ def run_window(win):
     leader="Up" if move>0 else "Down"
     ask=best_ask(win["toks"][leader])
     if ask is None: return
-    if not (ASK_MIN<=ask<=ASK_MAX):
-        print(f"   skip: ask {ask} fuera de [{ASK_MIN},{ASK_MAX}]")
+    if ASK_MIN<=ask<=ASK_MAX:      status="taker"    # brazo A: momentum confirmado
+    elif 0.05<=ask<=ASKB_MAX:      status="taker_b"  # brazo B: líder despreciado (divergencia)
+    else:
+        print(f"   skip: ask {ask} fuera de zonas A/B")
         log([ws,slug,round(move,1),leader,ask,"skip_price","","",cid]); return
-    print(f"   TAKER BUY {leader} @ {ask}  (move ${move:+.0f})")
-    # resolución: CLOB con reintentos, luego Binance de respaldo (validado 15/15)
+    print(f"   {'TAKER' if status=='taker' else 'TAKER-B'} BUY {leader} @ {ask}  (move ${move:+.0f})")
+    # resolución: ganador REAL del CLOB con reintentos largos. Binance de respaldo SOLO en brazo A:
+    # el brazo B selecciona ventanas de DIVERGENCIA de oráculo, donde Binance puede fallar.
     while now() < ws+300+5: time.sleep(5)
     win_side=None; t0=now()
-    while now() < t0+120 and win_side is None:
+    while now() < t0+360 and win_side is None:
         win_side=winner_clob(cid)
         if win_side is None: time.sleep(15)
-    if win_side is None:
+    if win_side is None and status=="taker":
         c=spot_at(ws+300)
         if c is not None and o is not None: win_side="Up" if c>o else "Down"
     won = "" if win_side is None else (1 if win_side==leader else 0)
     print(f"   -> winner {win_side} | won {won}")
-    log([ws,slug,round(move,1),leader,ask,"taker",win_side or "",won,cid])
+    log([ws,slug,round(move,1),leader,ask,status,win_side or "",won,cid])
 
 def analyze():
     if not os.path.exists(LOG): print("sin log aún"); return
@@ -130,7 +136,7 @@ def analyze():
         se=math.sqrt(wr*(1-wr)/n)
         print(f"  {label:>14}  n={n:>3}  win {wr:.1%} (IC {max(0,wr-1.96*se):.1%}-{min(1,wr+1.96*se):.1%})"
               f"  ask medio {ap:.1%}  EV/trade {ev:+.1%}")
-    rep("TODO",T)
+    rep("TODO (A)",T)
     print("  — por |move|:")
     for lo,hi,lab in [(0,15,"suave 8-15"),(15,40,"media 15-40"),(40,99,"fuerte 40-45")]:
         rep(lab,[r for r in T if lo<=abs(float(r["move"]))<hi])
@@ -138,13 +144,22 @@ def analyze():
     for lo,hi,lab in [(0.52,0.62,"52-62c"),(0.62,0.72,"62-72c"),(0.72,0.83,"72-82c")]:
         rep(lab,[r for r in T if lo<=float(r["ask"])<hi])
     n=len(T); wr=sum(int(r["won"]) for r in T)/n; ap=sum(float(r["ask"]) for r in T)/n
-    print("\nVEREDICTO (criterio pre-fijado: ≥40 resueltos, EV>0):")
+    print("\nVEREDICTO BRAZO A (pre-fijado: ≥40 resueltos, EV>0):")
     if n<40: print(f"  → aún {n}/40 trades — sin veredicto")
     elif wr>ap:
         se=math.sqrt(wr*(1-wr)/n)
         if wr-1.96*se>ap: print("  → LA SEÑAL PREDICE (win>ask, significativo). El edge de momentum es NUESTRO también.")
         else: print("  → positivo pero no significativo — seguir (exigir IC a ~80)")
     else: print("  → ≤break-even: 12ª muerte — el edge no se transfiere. Documentar y cerrar.")
+
+    B=[r for r in rows if r["status"]=="taker_b" and r["won"] in ("0","1")]
+    print(f"\nBRAZO B — líder despreciado <40¢ (pre-registrado: ≥25 resueltos, EV>0; referencia lab 78.4% a 33.5%):")
+    rep("TODO (B)",B)
+    Bp=[r for r in rows if r["status"]=="taker_b" and r["won"] not in ("0","1")]
+    if Bp: print(f"  ({len(Bp)} sin resolver — brazo B NO usa respaldo Binance, esperar al CLOB)")
+    if len(B)>=25:
+        wb=sum(int(r["won"]) for r in B)/len(B); ab=sum(float(r["ask"]) for r in B)/len(B)
+        print("  →", "el brazo B TAMBIÉN transfiere" if wb>ab else "el brazo B no transfiere (era post-hoc)")
 
 def main():
     if "--analyze" in sys.argv: analyze(); return
