@@ -98,6 +98,31 @@ def log(row):
         if new: w.writerow(HEADER)
         w.writerow(row)
 
+def backfill_pending(verbose=False):
+    """Rellena pendientes y CORRIGE filas resueltas por el antiguo respaldo Binance, usando
+    SIEMPRE el ganador real del CLOB (la liquidación de Polymarket). Idempotente: solo toca
+    filas con res != 'clob'. Corre al arrancar y cada ~10 min en el loop."""
+    if not os.path.exists(LOG): return (0,0)
+    rows=list(csv.DictReader(open(LOG,encoding="utf-8")))
+    if not rows: return (0,0)
+    filled=fixed=touched=0
+    for r in rows:
+        if r.get("status") not in ("taker","taker_b"): continue
+        if r.get("res")=="clob": continue
+        w=winner_clob(r.get("cid"))
+        if w is None: continue
+        won="1" if w==r.get("leader") else "0"
+        if r.get("won") not in ("0","1"): filled+=1
+        elif r.get("won")!=won:
+            fixed+=1
+            if verbose: print(f"   CORREGIDA {r.get('slug')}: won {r.get('won')} -> {won} (CLOB={w})")
+        r["winner"]=w; r["won"]=won; r["res"]="clob"; touched+=1
+        time.sleep(0.1)
+    if touched:
+        with open(LOG,"w",newline="",encoding="utf-8") as f:
+            wcsv=csv.DictWriter(f,fieldnames=list(rows[0].keys())); wcsv.writeheader(); wcsv.writerows(rows)
+    return (filled,fixed)
+
 def run_window(win):
     ws,slug,cid=win["ws"],win["slug"],win["cid"]
     print(f"\n── {slug} — entrada a los {ENTRY}s")
@@ -117,19 +142,18 @@ def run_window(win):
         print(f"   skip: ask {ask} fuera de zonas A/B")
         log([ws,slug,round(move,1),leader,ask,"skip_price","","",cid,""]); return
     print(f"   {'TAKER' if status=='taker' else 'TAKER-B'} BUY {leader} @ {ask}  (move ${move:+.0f})")
-    # resolución: ganador REAL del CLOB con reintentos largos. Binance de respaldo SOLO en brazo A:
-    # el brazo B selecciona ventanas de DIVERGENCIA de oráculo, donde Binance puede fallar.
+    # resolución SOLO por el ganador REAL del CLOB (la liquidación de Polymarket, que sigue a
+    # Chainlink). El respaldo Binance se ELIMINÓ: medido 92% de acierto = 8% de error, incluso
+    # en moves de $12-15 (dentro de nuestra señal). Lo no resuelto queda pendiente y lo rellena
+    # backfill_pending() en el propio loop.
     while now() < ws+300+5: time.sleep(5)
     win_side=None; res=""; t0=now()
     while now() < t0+360 and win_side is None:
         win_side=winner_clob(cid)
         if win_side is None: time.sleep(15)
     if win_side is not None: res="clob"
-    elif status=="taker":
-        c=spot_at(ws+300)
-        if c is not None and o is not None: win_side="Up" if c>o else "Down"; res="binance"
     won = "" if win_side is None else (1 if win_side==leader else 0)
-    print(f"   -> winner {win_side} ({res or 'sin resolver'}) | won {won}")
+    print(f"   -> winner {win_side or 'PENDIENTE'} | won {won}")
     log([ws,slug,round(move,1),leader,ask,status,win_side or "",won,cid,res])
 
 def analyze():
@@ -179,9 +203,14 @@ def analyze():
 
 def main():
     if "--analyze" in sys.argv: analyze(); return
+    if "--resolve" in sys.argv:
+        ensure_log(); f,x=backfill_pending(verbose=True)
+        print(f"rellenadas {f} | corregidas {x}"); return
     print("="*60+"\n  MOMENTUM PAPER BOT (DRY) — comprar el líder tarde (5m)\n"+"="*60)
     ensure_log()
-    seen=set()
+    f,x=backfill_pending(verbose=True)
+    if f or x: print(f"backfill inicial: rellenadas {f}, corregidas {x}")
+    seen=set(); last_bf=now()
     while True:
         try:
             t=now(); ws=t-t%300
@@ -190,6 +219,9 @@ def main():
                 if w:
                     seen.add(ws); run_window(w)
                     if len(seen)>500: seen=set(list(seen)[-100:])
+            if now()-last_bf>600:
+                f,x=backfill_pending(); last_bf=now()
+                if f or x: print(f"backfill: rellenadas {f}, corregidas {x}")
             time.sleep(5)
         except KeyboardInterrupt:
             print("\nparado."); break
