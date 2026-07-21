@@ -191,6 +191,11 @@ def analyze():
     print("  — por zona de ask:")
     for lo,hi,lab in [(0.52,0.62,"52-62c"),(0.62,0.72,"62-72c"),(0.72,0.83,"72-82c")]:
         rep(lab,[r for r in T if lo<=float(r["ask"])<hi])
+    import datetime as _dt
+    def _d(r): return _dt.datetime.utcfromtimestamp(int(r["ws"])).strftime("%m-%d")
+    print("  — por DÍA (¿aguanta el régimen, o vive de un día bueno?):")
+    for d in sorted({_d(r) for r in T}):
+        rep(d, [r for r in T if _d(r)==d])
     n=len(T); wr=sum(int(r["won"]) for r in T)/n; ap=sum(float(r["ask"]) for r in T)/n
     print("\nVEREDICTO BRAZO A (pre-fijado: ≥40 resueltos, EV>0):")
     if n<40: print(f"  → aún {n}/40 trades — sin veredicto")
