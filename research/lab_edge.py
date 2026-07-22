@@ -12,7 +12,7 @@ Para cada fill (BUY) de los ganadores:
     python lab_edge.py [YYYYMMDD ...]
 Necesita internet (Binance). Autónomo (stdlib).
 """
-import urllib.request, json, time, csv, os, sys, glob
+import urllib.request, json, time, csv, os, sys, glob, bisect
 from collections import defaultdict
 
 DIR=os.path.join(os.path.dirname(__file__),"lab")
@@ -59,7 +59,15 @@ def main():
     days=sys.argv[1:] or sorted({os.path.basename(p).split('_')[1][:8] for p in glob.glob(os.path.join(DIR,'fills_*.csv'))})
     if not days: print("sin datos"); return
     fills=load_fills(days)
-    print(f"días: {', '.join(days)}  | fills brutos: {len(fills)}  (resolviendo por Binance...)")
+    cl=[]
+    for d in days:
+        p=os.path.join(DIR,f"chainlink_{d}.csv")
+        if os.path.exists(p): cl+=list(csv.DictReader(open(p,encoding="utf-8")))
+    clidx=sorted((int(c["ts"]),float(c["price"])) for c in cl if c.get("price")); clts=[x[0] for x in clidx]
+    def lcl(ts,maxage=60):
+        i=bisect.bisect_right(clts,ts)-1
+        return clidx[i][1] if i>=0 and ts-clidx[i][0]<=maxage else None
+    print(f"días: {', '.join(days)}  | fills brutos: {len(fills)} | chainlink {len(clidx)}  (resuelve por CHAINLINK donde haya, Binance si no)")
 
     seen=set(); R=[]
     for f in fills:
@@ -74,7 +82,12 @@ def main():
         if ws+wlen > int(time.time())-2: continue          # ventana no cerrada
         o=spot_at(ws); c=spot_at(ws+wlen); e=spot_at(t)
         if o is None or c is None: continue
-        winner="Up" if c>o else "Down"
+        # resolución REAL por CHAINLINK si hay dato (>= como el mercado), si no Binance
+        clo=lcl(ws); clc=lcl(ws+wlen)
+        if clo is not None and clc is not None:
+            winner="Up" if clc>=clo else "Down"; rsrc="cl"
+        else:
+            winner="Up" if c>=o else "Down"; rsrc="bin"
         won=1 if f.get("outcome")==winner else 0
         intra = (e-o) if e is not None else None            # movimiento intra-ventana al entrar
         # ¿compraron a favor o en contra del movimiento?
@@ -83,11 +96,12 @@ def main():
             up_side=(f.get("outcome")=="Up")
             withmom = (up_side and intra>0) or ((not up_side) and intra<0)
         R.append({"wallet":f["wallet"],"price":p,"won":won,"size":sz,"mkt":"15m" if wlen==900 else "5m",
-                  "phase":t-ws,"withmom":withmom,"intra":intra,"absmove":round(abs(c-o),1),"day":slug})
+                  "phase":t-ws,"withmom":withmom,"intra":intra,"absmove":round(abs(c-o),1),"day":slug,"rsrc":rsrc})
         time.sleep(0.02)
     if not R: print("sin fills resueltos."); return
 
-    print(f"fills resueltos: {len(R)}\n")
+    ncl=sum(1 for r in R if r.get("rsrc")=="cl")
+    print(f"fills resueltos: {len(R)}  (por Chainlink: {ncl}, por Binance: {len(R)-ncl})\n")
     print("=== GLOBAL (todos los ganadores juntos) ===")
     line("TODO", stats(R))
     print("\n=== por wallet ===")
