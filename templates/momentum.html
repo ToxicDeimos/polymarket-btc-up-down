@@ -70,15 +70,16 @@
 
 <div class="section">
   <div class="card">
-    <h2>Resumen por brazo — A y B operando · C = filtro Chainlink en sombra</h2>
+    <h2>Estrategias A y B (independientes, operando) · Filtro Chainlink sobre A (sombra)</h2>
     <table>
-      <thead><tr><th>Brazo</th><th>n resueltos</th><th>WIN</th><th>Ask/precio medio</th><th>EV/trade</th><th>Qué es</th></tr></thead>
+      <thead><tr><th></th><th>n resueltos</th><th>WIN</th><th>Ask/precio medio</th><th>EV/trade</th><th>Qué es</th></tr></thead>
       <tbody id="brazos-body"></tbody>
     </table>
     <div class="sub" style="margin-top:8px">
-      <b>C</b> parte el brazo A según si <b>Chainlink</b> (la moneda de liquidación) confirmaría el líder-por-Binance.
-      Si <span class="green">confirma</span> gana más que <span class="red">descarta</span>, el filtro Chainlink vale
-      → futuro brazo C. Es solo medición: no cambia lo que opera el brazo A.
+      <b>A</b> y <b>B</b> son dos apuestas INDEPENDIENTES con trades propios. <b>El filtro Chainlink NO es un brazo</b>:
+      parte los MISMOS trades de A según si Chainlink confirmaría el líder-por-Binance. Si
+      <span class="green">confirma</span> gana más que <span class="red">descarta</span>, añadir ese filtro mejoraría A.
+      Es solo medición (sombra): no cambia lo que opera A.
     </div>
   </div>
 </div>
@@ -204,10 +205,12 @@ async function refresh(){
         <td class="muted">${nota}</td></tr>`;
     }
     $('brazos-body').innerHTML =
-      brazoRow('A (todo)','taker',s.overall,'momentum líder 52-72¢ · OPERANDO') +
-      brazoRow('C: confirma','media',s.arm_c_yes,'A donde Chainlink confirma → operaría el filtro') +
-      brazoRow('C: descarta','down',s.arm_c_no,'A donde Chainlink discrepa → el filtro lo quitaría') +
-      brazoRow('B','fuerte',s.arm_b,'líder despreciado <40¢ · OPERANDO');
+      `<tr><td colspan="6" class="muted" style="font-size:11px;text-transform:uppercase;letter-spacing:.06em">Estrategias independientes (operando)</td></tr>` +
+      brazoRow('BRAZO A','taker',s.overall,'momentum · compra el líder a 52-72¢') +
+      brazoRow('BRAZO B','fuerte',s.arm_b,'independiente · compra el líder despreciado <40¢') +
+      `<tr><td colspan="6" class="muted" style="font-size:11px;text-transform:uppercase;letter-spacing:.06em">Filtro Chainlink sobre A (sombra — NO opera, solo mide)</td></tr>` +
+      brazoRow('↳ A · confirma','media',s.arm_c_yes,'trades de A donde Chainlink confirma → los que dejaría el filtro') +
+      brazoRow('↳ A · descarta','down',s.arm_c_no,'trades de A donde Chainlink discrepa → los que quitaría');
 
     $('by-move').innerHTML =
       statRow('suave','suave',s.by_move['suave']) +
