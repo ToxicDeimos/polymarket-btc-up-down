@@ -305,10 +305,12 @@ def api_momentum():
     resolved_b = [r for r in takers_b if r.get("won") in ("0", "1")]
     arm_b = _mom_stats(resolved_b)
     if arm_b: arm_b["pending"] = len(takers_b) - len(resolved_b)
-    # BRAZO C sombra: filtro de confirmación Chainlink sobre el brazo A resuelto
+    # Filtro de confirmación Chainlink en sombra: sobre el brazo A y sobre el brazo B
     arm_c_yes = _mom_stats([r for r in resolved if r.get("cl_confirm") == "yes"])
     arm_c_no  = _mom_stats([r for r in resolved if r.get("cl_confirm") == "no"])
-    cl_signals = sum(1 for r in takers if r.get("cl_confirm") in ("yes", "no"))
+    arm_bc_yes = _mom_stats([r for r in resolved_b if r.get("cl_confirm") == "yes"])
+    arm_bc_no  = _mom_stats([r for r in resolved_b if r.get("cl_confirm") == "no"])
+    cl_signals = sum(1 for r in takers + takers_b if r.get("cl_confirm") in ("yes", "no"))
 
     def _pnl1(rs):   # P&L acumulado por $1 apostado por trade
         return round(sum((1 / float(r["ask"]) - 1) if r.get("won") == "1" else -1 for r in rs), 3) if rs else 0.0
@@ -355,6 +357,7 @@ def api_momentum():
                     "overall": overall, "by_move": by_move, "by_ask": by_ask,
                     "arm_b": arm_b, "arm_b_signals": len(takers_b),
                     "arm_c_yes": arm_c_yes, "arm_c_no": arm_c_no, "cl_signals": cl_signals,
+                    "arm_bc_yes": arm_bc_yes, "arm_bc_no": arm_bc_no,
                     "pnl1": _pnl1(resolved), "pnl1_b": _pnl1(resolved_b),
                     "verdict": {"kind": verdict[0], "text": verdict[1]}},
         "trades": [trade(r) for r in shown],

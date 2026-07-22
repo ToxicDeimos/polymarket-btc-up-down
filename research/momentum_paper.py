@@ -260,6 +260,11 @@ def analyze():
     B=[r for r in rows if r["status"]=="taker_b" and r["won"] in ("0","1")]
     print(f"\nBRAZO B — líder despreciado <40¢ (pre-registrado: ≥25 resueltos, EV>0; referencia lab 78.4% a 33.5%):")
     rep("TODO (B)",B)
+    Bc=[r for r in B if r.get("cl_confirm") in ("yes","no")]
+    if Bc:
+        print("  filtro Chainlink sobre B (¿la divergencia es el driver del 78.4% del lab?):")
+        rep("B confirma", [r for r in Bc if r["cl_confirm"]=="yes"])
+        rep("B descarta", [r for r in Bc if r["cl_confirm"]=="no"])
     Bp=[r for r in rows if r["status"]=="taker_b" and r["won"] not in ("0","1")]
     if Bp: print(f"  ({len(Bp)} sin resolver — brazo B NO usa respaldo Binance, esperar al CLOB)")
     if len(B)>=25:
