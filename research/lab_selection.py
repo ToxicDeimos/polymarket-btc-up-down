@@ -94,16 +94,24 @@ def main():
         cl0=lcl(t); clw=lcl(ws)
         clmove=(cl0-clw) if (cl0 is not None and clw is not None) else None
         cl_agree=None if clmove is None else ((clmove>0)==(move>0))
-        c=lspot(ws+300,12)                                   # cierre desde el spot del lab
-        if c is None: continue
-        won=1 if leader==("Up" if c>o else "Down") else 0
+        # resolución con la fuente REAL: CHAINLINK (open/close, regla >=) si hay dato; si no, Binance local
+        clc=lcl(ws+300,45)
+        if clw is not None and clc is not None:
+            winner="Up" if clc>=clw else "Down"; res="cl"
+        else:
+            c=lspot(ws+300,12)
+            if c is None: continue
+            winner="Up" if c>=o else "Down"; res="bin"
+        won=1 if leader==winner else 0
         R.append({"day":dt.datetime.utcfromtimestamp(ws).strftime("%m-%d"),
-                  "won":won,"accel":accel,"cl_agree":cl_agree})
+                  "won":won,"accel":accel,"cl_agree":cl_agree,"res":res})
 
     if len(R)<30:
         print(f"\npocos fills momentum en fase con datos de libro ({len(R)}) — deja correr el colector más.")
         return
-    print(f"\nfills momentum (5m, fase 200-280, move 8-45) con feature: {len(R)}  |  win base {wr(R):.1%}")
+    ncl=sum(1 for x in R if x.get("res")=="cl")
+    print(f"\nfills momentum (5m, fase 200-280, move 8-45) con feature: {len(R)}  |  win base {wr(R):.1%}"
+          f"  |  resueltos por Chainlink: {ncl}, por Binance: {len(R)-ncl}")
 
     print("\n=== FEATURE 1: ¿el move sigue ACELERANDO a 240s? (móv últimos 30s en la dirección del líder) ===")
     wa,wb=show(R, lambda x:x["accel"], "acelerando (SÍ) vs frenando/girando (NO):")
@@ -119,13 +127,14 @@ def main():
         elif gtr>0.05: print("  → funciona en train pero NO en test = overfit, descartar")
         else: print("  → sin señal clara en la aceleración")
 
-    Rc=[x for x in R if x["cl_agree"] is not None]
-    print(f"\n=== FEATURE 2: ¿CHAINLINK confirma la dirección de Binance? (n con dato={len(Rc)}) ===")
-    if len(Rc)>=20:
-        show(Rc, lambda x:x["cl_agree"], "Chainlink de acuerdo (SÍ) vs discrepa (NO):")
+    # SOLO fills resueltos por Chainlink (sin la contaminación de resolver con Binance)
+    Rc=[x for x in R if x["cl_agree"] is not None and x.get("res")=="cl"]
+    print(f"\n=== FEATURE 2: ¿CHAINLINK confirma la dirección de Binance? (resueltos por Chainlink: {len(Rc)}) ===")
+    if len(Rc)>=30:
+        wa,wb=show(Rc, lambda x:x["cl_agree"], "Chainlink de acuerdo (SÍ) vs discrepa (NO):")
         print("  (si 'de acuerdo' gana mucho más → ELLOS miden en Chainlink = selección copiable)")
     else:
-        print(f"  solo {len(Rc)} fills con Chainlink — el colector lo captura desde hace poco; re-correr en 1-2 días.")
+        print(f"  solo {len(Rc)} fills con Chainlink limpio — necesita más días acumulados. Re-correr en 2-3 días.")
 
 if __name__=="__main__":
     try: sys.stdout.reconfigure(encoding="utf-8")
