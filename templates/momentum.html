@@ -69,6 +69,21 @@
 <div class="verdict wait" id="verdict">—</div>
 
 <div class="section">
+  <div class="card">
+    <h2>Resumen por brazo — A y B operando · C = filtro Chainlink en sombra</h2>
+    <table>
+      <thead><tr><th>Brazo</th><th>n resueltos</th><th>WIN</th><th>Ask/precio medio</th><th>EV/trade</th><th>Qué es</th></tr></thead>
+      <tbody id="brazos-body"></tbody>
+    </table>
+    <div class="sub" style="margin-top:8px">
+      <b>C</b> parte el brazo A según si <b>Chainlink</b> (la moneda de liquidación) confirmaría el líder-por-Binance.
+      Si <span class="green">confirma</span> gana más que <span class="red">descarta</span>, el filtro Chainlink vale
+      → futuro brazo C. Es solo medición: no cambia lo que opera el brazo A.
+    </div>
+  </div>
+</div>
+
+<div class="section">
   <div class="two-col">
     <div class="card">
       <h2>Por fuerza del movimiento — ¿aguanta en suaves?</h2>
@@ -178,6 +193,21 @@ async function refresh(){
 
     $('verdict').className = `verdict ${s.verdict.kind}`;
     $('verdict').textContent = s.verdict.text;
+
+    function brazoRow(label, cls, st, nota){
+      if(!st) return `<tr><td><span class="pill ${cls}">${label}</span></td><td colspan="5" class="muted">sin trades resueltos</td></tr>`;
+      const wrC = st.win_rate > st.avg_ask ? 'green' : 'red';
+      const evC = st.ev >= 0 ? 'green' : 'red';
+      return `<tr><td><span class="pill ${cls}">${label}</span></td><td>${st.n}</td>
+        <td class="${wrC}">${st.win_rate}% <span class="muted">(${st.ci_lo}-${st.ci_hi})</span></td>
+        <td class="muted">${st.avg_ask}%</td><td class="${evC}">${st.ev>=0?'+':''}${st.ev}%</td>
+        <td class="muted">${nota}</td></tr>`;
+    }
+    $('brazos-body').innerHTML =
+      brazoRow('A (todo)','taker',s.overall,'momentum líder 52-72¢ · OPERANDO') +
+      brazoRow('C: confirma','media',s.arm_c_yes,'A donde Chainlink confirma → operaría el filtro') +
+      brazoRow('C: descarta','down',s.arm_c_no,'A donde Chainlink discrepa → el filtro lo quitaría') +
+      brazoRow('B','fuerte',s.arm_b,'líder despreciado <40¢ · OPERANDO');
 
     $('by-move').innerHTML =
       statRow('suave','suave',s.by_move['suave']) +
