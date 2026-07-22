@@ -81,7 +81,7 @@ def main():
         try: t=int(f["ts_trade"]); ws=int(slug.split("-")[-1])
         except Exception: continue
         if not (200<=t-ws<280): continue                    # nuestra fase 240s
-        o=spot_at(ws); e=spot_at(t)
+        o=lspot(ws,12); e=lspot(t,12)                        # spot del PROPIO lab (no Binance)
         if o is None or e is None: continue
         move=e-o
         if not (8<=abs(move)<=45): continue                 # nuestra banda de move
@@ -94,12 +94,11 @@ def main():
         cl0=lcl(t); clw=lcl(ws)
         clmove=(cl0-clw) if (cl0 is not None and clw is not None) else None
         cl_agree=None if clmove is None else ((clmove>0)==(move>0))
-        c=spot_at(ws+300)
+        c=lspot(ws+300,12)                                   # cierre desde el spot del lab
         if c is None: continue
         won=1 if leader==("Up" if c>o else "Down") else 0
         R.append({"day":dt.datetime.utcfromtimestamp(ws).strftime("%m-%d"),
                   "won":won,"accel":accel,"cl_agree":cl_agree})
-        time.sleep(0.01)
 
     if len(R)<30:
         print(f"\npocos fills momentum en fase con datos de libro ({len(R)}) — deja correr el colector más.")
