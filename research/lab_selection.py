@@ -136,6 +136,38 @@ def main():
     else:
         print(f"  solo {len(Rc)} fills con Chainlink limpio — necesita más días acumulados. Re-correr en 2-3 días.")
 
+    # ¿FUENTE del líder: miden en BINANCE o en CHAINLINK? En las DIVERGENCIAS, ¿qué lado compran?
+    print("\n=== ¿FUENTE del líder: BINANCE o CHAINLINK? (test conductual en DIVERGENCIAS) ===")
+    seen2=set(); dn=dcl=dbin=0
+    for f in fills:
+        if f.get("trade_side")!="BUY": continue
+        slug=f.get("slug","") or ""
+        if "-5m-" not in slug: continue
+        key=(f.get("tx"),f.get("ts_trade"),f.get("price"),f.get("outcome"))
+        if key in seen2: continue
+        seen2.add(key)
+        try: t=int(f["ts_trade"]); ws=int(slug.split("-")[-1])
+        except Exception: continue
+        if not (30<=t-ws<295): continue
+        bo=lspot(ws,12); be=lspot(t,12); co=lcl(ws,45); ce=lcl(t,45)
+        if None in (bo,be,co,ce): continue
+        mb=be-bo; mc=ce-co
+        if abs(mb)<3 or abs(mc)<3: continue          # movimientos claros en ambas fuentes
+        bl="Up" if mb>0 else "Down"; cll="Up" if mc>0 else "Down"
+        if bl==cll: continue                          # SOLO divergencias
+        dn+=1
+        if f.get("outcome")==cll: dcl+=1
+        elif f.get("outcome")==bl: dbin+=1
+    if dn:
+        print(f"  divergencias con compra: {dn}")
+        print(f"    compraron el lado CHAINLINK: {dcl} ({dcl/dn:.0%})")
+        print(f"    compraron el lado BINANCE:   {dbin} ({dbin/dn:.0%})")
+        if dcl>dbin*2: print("  → miden en CHAINLINK (no comparan). Reconstruir el bot con Chainlink.")
+        elif dbin>dcl*2: print("  → miden en Binance (sorprendente).")
+        else: print("  → mezclado / pocos casos — más datos.")
+    else:
+        print("  sin divergencias con datos de ambas fuentes aún — Chainlink lleva poco. Re-correr en días.")
+
 if __name__=="__main__":
     try: sys.stdout.reconfigure(encoding="utf-8")
     except Exception: pass
