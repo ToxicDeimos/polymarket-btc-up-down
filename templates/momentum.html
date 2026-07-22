@@ -208,15 +208,18 @@ async function refresh(){
       `<tr><td colspan="6" class="muted" style="font-size:11px;text-transform:uppercase;letter-spacing:.06em">Estrategias independientes (operando)</td></tr>` +
       brazoRow('BRAZO A','taker',s.overall,'momentum · compra el líder a 52-72¢') +
       brazoRow('BRAZO B','fuerte',s.arm_b,'independiente · compra el líder despreciado <40¢') +
-      `<tr><td colspan="6" class="muted" style="font-size:11px;text-transform:uppercase;letter-spacing:.06em">Filtro ACELERACIÓN sobre A (sombra — el hallazgo SÓLIDO del lab)</td></tr>` +
-      brazoRow('↳ A · acelera','media',s.arm_ac_yes,'el move sigue vivo a 240s → los que dejaría el filtro') +
-      brazoRow('↳ A · frena','down',s.arm_ac_no,'el move ya se gira a 240s → los que quitaría (¿pierden?)') +
-      `<tr><td colspan="6" class="muted" style="font-size:11px;text-transform:uppercase;letter-spacing:.06em">Filtro Chainlink sobre A (sombra — secundario, la fuente salió mezclada 59/41)</td></tr>` +
-      brazoRow('↳ A · confirma','media',s.arm_c_yes,'trades de A donde Chainlink confirma → los que dejaría el filtro') +
-      brazoRow('↳ A · descarta','down',s.arm_c_no,'trades de A donde Chainlink discrepa → los que quitaría') +
-      `<tr><td colspan="6" class="muted" style="font-size:11px;text-transform:uppercase;letter-spacing:.06em">Filtro Chainlink sobre B (sombra — ¿es la divergencia el driver del 78% del lab?)</td></tr>` +
-      brazoRow('↳ B · confirma','media',s.arm_bc_yes,'B donde Chainlink confirma → el mispricing real (¿gana?)') +
-      brazoRow('↳ B · descarta','down',s.arm_bc_no,'B donde Chainlink discrepa → mercado tiene razón (¿pierde?)');
+      `<tr><td colspan="6" class="muted" style="font-size:11px;text-transform:uppercase;letter-spacing:.06em">Filtro ACELERACIÓN sobre A (sombra — el hallazgo SÓLIDO del lab · el filtro SEGUIRÍA operando 'acelera' y dejaría de operar 'frena')</td></tr>` +
+      brazoRow('↳ A · acelera','media',s.arm_ac_yes,'move aún vivo a 240s → el filtro los MANTIENE (queremos que ganen)') +
+      brazoRow('↳ A · frena','down',s.arm_ac_no,'move ya girándose → el filtro los QUITA (queremos que pierdan)') +
+      `<tr><td colspan="6" class="muted" style="font-size:11px;text-transform:uppercase;letter-spacing:.06em">Filtro Chainlink sobre A (sombra secundaria — el filtro SEGUIRÍA operando 'confirma' y dejaría de operar 'descarta')</td></tr>` +
+      brazoRow('↳ A · confirma','media',s.arm_c_yes,'Chainlink coincide con el líder → el filtro los MANTIENE (queremos que ganen)') +
+      brazoRow('↳ A · descarta','down',s.arm_c_no,'Chainlink discrepa del líder → el filtro los QUITA (queremos que pierdan)') +
+      `<tr><td colspan="6" class="muted" style="font-size:11px;text-transform:uppercase;letter-spacing:.06em">Filtro ACELERACIÓN sobre B (sombra — el filtro MANTIENE 'acelera', QUITA 'frena')</td></tr>` +
+      brazoRow('↳ B · acelera','media',s.arm_bac_yes,'move aún vivo → el despreciado sería mispricing real (queremos que ganen)') +
+      brazoRow('↳ B · frena','down',s.arm_bac_no,'move ya girándose → el filtro los QUITA (queremos que pierdan)') +
+      `<tr><td colspan="6" class="muted" style="font-size:11px;text-transform:uppercase;letter-spacing:.06em">Filtro Chainlink sobre B (sombra secundaria)</td></tr>` +
+      brazoRow('↳ B · confirma','media',s.arm_bc_yes,'Chainlink coincide con el líder → el filtro los MANTIENE (queremos que ganen)') +
+      brazoRow('↳ B · descarta','down',s.arm_bc_no,'Chainlink discrepa → el filtro los QUITA (queremos que pierdan)');
 
     $('by-move').innerHTML =
       statRow('suave','suave',s.by_move['suave']) +

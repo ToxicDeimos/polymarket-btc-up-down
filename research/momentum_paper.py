@@ -273,9 +273,14 @@ def analyze():
     B=[r for r in rows if r["status"]=="taker_b" and r["won"] in ("0","1")]
     print(f"\nBRAZO B — líder despreciado <40¢ (pre-registrado: ≥25 resueltos, EV>0; referencia lab 78.4% a 33.5%):")
     rep("TODO (B)",B)
+    Bac=[r for r in B if r.get("accel") in ("yes","no")]
+    if Bac:
+        print("  filtro ACELERACIÓN sobre B (el move sigue vivo → el despreciado es mispricing real?):")
+        rep("B acelera", [r for r in Bac if r["accel"]=="yes"])
+        rep("B frena",   [r for r in Bac if r["accel"]=="no"])
     Bc=[r for r in B if r.get("cl_confirm") in ("yes","no")]
     if Bc:
-        print("  filtro Chainlink sobre B (¿la divergencia es el driver del 78.4% del lab?):")
+        print("  filtro Chainlink sobre B (secundario):")
         rep("B confirma", [r for r in Bc if r["cl_confirm"]=="yes"])
         rep("B descarta", [r for r in Bc if r["cl_confirm"]=="no"])
     Bp=[r for r in rows if r["status"]=="taker_b" and r["won"] not in ("0","1")]

@@ -311,9 +311,11 @@ def api_momentum():
     arm_bc_yes = _mom_stats([r for r in resolved_b if r.get("cl_confirm") == "yes"])
     arm_bc_no  = _mom_stats([r for r in resolved_b if r.get("cl_confirm") == "no"])
     cl_signals = sum(1 for r in takers + takers_b if r.get("cl_confirm") in ("yes", "no"))
-    # Filtro ACELERACIÓN sobre A (el hallazgo sólido del lab)
+    # Filtro ACELERACIÓN (el hallazgo sólido del lab) — sobre A y sobre B
     arm_ac_yes = _mom_stats([r for r in resolved if r.get("accel") == "yes"])
     arm_ac_no  = _mom_stats([r for r in resolved if r.get("accel") == "no"])
+    arm_bac_yes = _mom_stats([r for r in resolved_b if r.get("accel") == "yes"])
+    arm_bac_no  = _mom_stats([r for r in resolved_b if r.get("accel") == "no"])
 
     def _pnl1(rs):   # P&L acumulado por $1 apostado por trade
         return round(sum((1 / float(r["ask"]) - 1) if r.get("won") == "1" else -1 for r in rs), 3) if rs else 0.0
@@ -362,6 +364,7 @@ def api_momentum():
                     "arm_c_yes": arm_c_yes, "arm_c_no": arm_c_no, "cl_signals": cl_signals,
                     "arm_bc_yes": arm_bc_yes, "arm_bc_no": arm_bc_no,
                     "arm_ac_yes": arm_ac_yes, "arm_ac_no": arm_ac_no,
+                    "arm_bac_yes": arm_bac_yes, "arm_bac_no": arm_bac_no,
                     "pnl1": _pnl1(resolved), "pnl1_b": _pnl1(resolved_b),
                     "verdict": {"kind": verdict[0], "text": verdict[1]}},
         "trades": [trade(r) for r in shown],
