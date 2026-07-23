@@ -33,12 +33,17 @@ ASK_MAX  = 0.72         #   52-62¢ EV +44.4¢ (n=6) · 62-72¢ +16.4¢ (n=11) �
 ASKB_MAX = 0.40         # BRAZO B (pre-registrado tras verificar 37 fills con ganador REAL 78.4%
                         # a precio 33.5%): líder DESPRECIADO — divergencia mercado/spot. Zona
                         # 0.40-0.52 sigue excluida (validada negativa, EV −11.8¢).
+CL_DIV_MIN = 3          # $ — DIVERGENCIA REAL de Chainlink: se movió ≥$3 EN CONTRA del move de
+                        # Binance a 240s. Por debajo = Chainlink casi plano/lag, NO divergencia.
+                        # El lab ve la señal AQUÍ (discrepa → coinflip 53.8%), no en el "confirma"
+                        # que es el ~90% por defecto y ≈ tasa base (no filtra nada).
 LOG = os.path.join(os.path.dirname(__file__), "momentum_paper_log.csv")
-HEADER = ["ws","slug","move","leader","ask","status","winner","won","cid","res","ask2","cl_confirm","accel"]
+HEADER = ["ws","slug","move","leader","ask","status","winner","won","cid","res","ask2","cl_confirm","accel","cl_div"]
 OLD_HEADERS = [["ws","slug","move","leader","ask","status","winner","won","cid"],
                ["ws","slug","move","leader","ask","status","winner","won","cid","res"],
                ["ws","slug","move","leader","ask","status","winner","won","cid","res","ask2"],
-               ["ws","slug","move","leader","ask","status","winner","won","cid","res","ask2","cl_confirm"]]
+               ["ws","slug","move","leader","ask","status","winner","won","cid","res","ask2","cl_confirm"],
+               ["ws","slug","move","leader","ask","status","winner","won","cid","res","ask2","cl_confirm","accel"]]
 
 def ensure_log():
     """Migra el log a HEADER actual (añade columnas nuevas vacías, conserva todo)."""
@@ -127,6 +132,28 @@ def chainlink_move(ws, t):
     a=at(ws); b=at(t)
     return (b-a) if (a is not None and b is not None) else None
 
+def backfill_cldiv():
+    """Rellena cl_div (divergencia Chainlink a 240s) para filas que no lo tienen, leyendo los CSV
+    PERSISTENTES del colector (lab/chainlink_*.csv). OFFLINE (sin red) e idempotente: así el
+    histórico entero se puede evaluar YA, sin esperar a que entren trades nuevos. Devuelve nº filas."""
+    if not os.path.exists(LOG): return 0
+    rows=list(csv.DictReader(open(LOG,encoding="utf-8")))
+    if not rows or "cl_div" not in rows[0]: return 0     # log sin migrar aún
+    n=0
+    for r in rows:
+        if r.get("cl_div") not in (None,""): continue
+        if r.get("status") not in ("taker","taker_b","skip_price"): continue
+        try: ws=int(r["ws"]); mv=float(r["move"])
+        except Exception: continue
+        clm=chainlink_move(ws, ws+ENTRY)                 # move CL de ventana→entrada (240s)
+        if clm is None: continue
+        r["cl_div"]="yes" if (abs(clm)>=CL_DIV_MIN and (clm>0)!=(mv>0)) else "no"
+        n+=1
+    if n:
+        with open(LOG,"w",newline="",encoding="utf-8") as f:
+            w=csv.DictWriter(f,fieldnames=list(rows[0].keys())); w.writeheader(); w.writerows(rows)
+    return n
+
 def backfill_pending(verbose=False):
     """Rellena pendientes y CORRIGE filas resueltas por el antiguo respaldo Binance, usando
     SIEMPRE el ganador real del CLOB (la liquidación de Polymarket). Idempotente: solo toca
@@ -165,13 +192,15 @@ def run_window(win):
     move=e-o
     if not (MOVE_MIN<=abs(move)<=MOVE_MAX):
         print(f"   skip: move ${move:+.0f} fuera de [{MOVE_MIN},{MOVE_MAX}]")
-        log([ws,slug,round(move,1),"","","skip_move","","",cid,"","","",""]); return
+        log([ws,slug,round(move,1),"","","skip_move","","",cid,"","","","",""]); return
     leader="Up" if move>0 else "Down"
     ask=best_ask(win["toks"][leader])
     ask2=best_ask(win["toks"]["Down" if leader=="Up" else "Up"])   # lado FADE (sombra contraria)
-    # SOMBRA Chainlink: ¿confirma el líder-por-Binance?
+    # SOMBRA Chainlink: ¿confirma el líder-por-Binance? (confirma = caso por defecto ~90%, no filtra)
     clm=chainlink_move(ws, now())
     cl_confirm = "" if clm is None else ("yes" if (clm>0)==(move>0) else "no")
+    # SOMBRA DIVERGENCIA (lo que SÍ tiene filo según el lab): Chainlink se movió ≥$3 EN CONTRA
+    cl_div = "" if clm is None else ("yes" if (abs(clm)>=CL_DIV_MIN and (clm>0)!=(move>0)) else "no")
     # SOMBRA ACELERACIÓN (el hallazgo sólido del lab): ¿el move sigue vivo a 240s? (últimos 30s)
     e30=spot_at(now()-30)
     accel = "" if e30 is None else ("yes" if ((e-e30)>0)==(move>0) else "no")
@@ -180,7 +209,7 @@ def run_window(win):
     elif 0.05<=ask<=ASKB_MAX:      status="taker_b"  # brazo B: líder despreciado (divergencia)
     else:
         print(f"   skip: ask {ask} fuera de zonas A/B")
-        log([ws,slug,round(move,1),leader,ask,"skip_price","","",cid,"",ask2 or "",cl_confirm,accel]); return
+        log([ws,slug,round(move,1),leader,ask,"skip_price","","",cid,"",ask2 or "",cl_confirm,accel,cl_div]); return
     print(f"   {'TAKER' if status=='taker' else 'TAKER-B'} BUY {leader} @ {ask}  (move ${move:+.0f})")
     # resolución SOLO por el ganador REAL del CLOB (la liquidación de Polymarket, que sigue a
     # Chainlink). El respaldo Binance se ELIMINÓ: medido 92% de acierto = 8% de error, incluso
@@ -194,10 +223,13 @@ def run_window(win):
     if win_side is not None: res="clob"
     won = "" if win_side is None else (1 if win_side==leader else 0)
     print(f"   -> winner {win_side or 'PENDIENTE'} | won {won}")
-    log([ws,slug,round(move,1),leader,ask,status,win_side or "",won,cid,res,ask2 or "",cl_confirm,accel])
+    log([ws,slug,round(move,1),leader,ask,status,win_side or "",won,cid,res,ask2 or "",cl_confirm,accel,cl_div])
 
 def analyze():
     if not os.path.exists(LOG): print("sin log aún"); return
+    ensure_log()
+    nd=backfill_cldiv()
+    if nd: print(f"cl_div rellenado en {nd} filas desde los CSV de Chainlink del colector")
     rows=list(csv.DictReader(open(LOG,encoding="utf-8")))
     from collections import Counter
     st=Counter(r["status"] for r in rows)
@@ -261,14 +293,16 @@ def analyze():
     else:
         print("  (aún sin datos de aceleración — se loguea desde ahora)")
 
-    C=[r for r in T if r.get("cl_confirm") in ("yes","no")]
-    print(f"\nFILTRO CHAINLINK sobre A (secundario — la fuente salió mezclada 59/41):")
+    C=[r for r in T if r.get("cl_div") in ("yes","no")]
+    print(f"\nFILTRO DIVERGENCIA CHAINLINK sobre A (el lab ve la señal en la DIVERGENCIA, no en el ~90% que confirma):")
     if C:
-        rep("A confirma", [r for r in C if r["cl_confirm"]=="yes"])
-        rep("A descarta", [r for r in C if r["cl_confirm"]=="no"])
-        print("  (si 'confirma' gana más que 'descarta' → el filtro Chainlink vale; sin dato: colector parado)")
+        rep("A alineado", [r for r in C if r["cl_div"]=="no"])    # MANTIENE — CL no diverge (normal)
+        rep("A diverge",  [r for r in C if r["cl_div"]=="yes"])   # QUITARÍA — CL ≥$3 en contra
+        nd=sum(1 for r in C if r["cl_div"]=="yes")
+        print(f"  (diverge = Chainlink ≥${CL_DIV_MIN} EN CONTRA del move de Binance a 240s; {nd}/{len(C)} son divergencias."
+              f" Si 'diverge' pierde → el filtro es esquivar esas ventanas)")
     else:
-        print("  (aún sin datos de Chainlink en los trades — necesita el colector corriendo + acumular)")
+        print("  (aún sin datos de divergencia — el colector debe tener chainlink_*.csv de esas ventanas)")
 
     B=[r for r in rows if r["status"]=="taker_b" and r["won"] in ("0","1")]
     print(f"\nBRAZO B — líder despreciado <40¢ (pre-registrado: ≥25 resueltos, EV>0; referencia lab 78.4% a 33.5%):")
@@ -278,11 +312,11 @@ def analyze():
         print("  filtro ACELERACIÓN sobre B (el move sigue vivo → el despreciado es mispricing real?):")
         rep("B acelera", [r for r in Bac if r["accel"]=="yes"])
         rep("B frena",   [r for r in Bac if r["accel"]=="no"])
-    Bc=[r for r in B if r.get("cl_confirm") in ("yes","no")]
+    Bc=[r for r in B if r.get("cl_div") in ("yes","no")]
     if Bc:
-        print("  filtro Chainlink sobre B (secundario):")
-        rep("B confirma", [r for r in Bc if r["cl_confirm"]=="yes"])
-        rep("B descarta", [r for r in Bc if r["cl_confirm"]=="no"])
+        print("  filtro DIVERGENCIA Chainlink sobre B:")
+        rep("B alineado", [r for r in Bc if r["cl_div"]=="no"])
+        rep("B diverge",  [r for r in Bc if r["cl_div"]=="yes"])
     Bp=[r for r in rows if r["status"]=="taker_b" and r["won"] not in ("0","1")]
     if Bp: print(f"  ({len(Bp)} sin resolver — brazo B NO usa respaldo Binance, esperar al CLOB)")
     if len(B)>=25:
@@ -292,12 +326,13 @@ def analyze():
 def main():
     if "--analyze" in sys.argv: analyze(); return
     if "--resolve" in sys.argv:
-        ensure_log(); f,x=backfill_pending(verbose=True)
-        print(f"rellenadas {f} | corregidas {x}"); return
+        ensure_log(); f,x=backfill_pending(verbose=True); nd=backfill_cldiv()
+        print(f"rellenadas {f} | corregidas {x} | cl_div {nd}"); return
     print("="*60+"\n  MOMENTUM PAPER BOT (DRY) — comprar el líder tarde (5m)\n"+"="*60)
     ensure_log()
     f,x=backfill_pending(verbose=True)
-    if f or x: print(f"backfill inicial: rellenadas {f}, corregidas {x}")
+    nd=backfill_cldiv()
+    if f or x or nd: print(f"backfill inicial: rellenadas {f}, corregidas {x}, cl_div {nd}")
     seen=set(); last_bf=now()
     while True:
         try:
@@ -308,8 +343,8 @@ def main():
                     seen.add(ws); run_window(w)
                     if len(seen)>500: seen=set(list(seen)[-100:])
             if now()-last_bf>600:
-                f,x=backfill_pending(); last_bf=now()
-                if f or x: print(f"backfill: rellenadas {f}, corregidas {x}")
+                f,x=backfill_pending(); nd=backfill_cldiv(); last_bf=now()
+                if f or x or nd: print(f"backfill: rellenadas {f}, corregidas {x}, cl_div {nd}")
             time.sleep(5)
         except KeyboardInterrupt:
             print("\nparado."); break

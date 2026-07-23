@@ -305,12 +305,13 @@ def api_momentum():
     resolved_b = [r for r in takers_b if r.get("won") in ("0", "1")]
     arm_b = _mom_stats(resolved_b)
     if arm_b: arm_b["pending"] = len(takers_b) - len(resolved_b)
-    # Filtro de confirmación Chainlink en sombra: sobre el brazo A y sobre el brazo B
-    arm_c_yes = _mom_stats([r for r in resolved if r.get("cl_confirm") == "yes"])
-    arm_c_no  = _mom_stats([r for r in resolved if r.get("cl_confirm") == "no"])
-    arm_bc_yes = _mom_stats([r for r in resolved_b if r.get("cl_confirm") == "yes"])
-    arm_bc_no  = _mom_stats([r for r in resolved_b if r.get("cl_confirm") == "no"])
-    cl_signals = sum(1 for r in takers + takers_b if r.get("cl_confirm") in ("yes", "no"))
+    # Filtro DIVERGENCIA Chainlink en sombra (lo que SÍ tiene filo según el lab): Chainlink se
+    # movió >=$3 EN CONTRA a 240s. 'alineado' (no diverge) = caso normal → MANTIENE; 'diverge' = QUITA.
+    arm_c_keep = _mom_stats([r for r in resolved if r.get("cl_div") == "no"])
+    arm_c_div  = _mom_stats([r for r in resolved if r.get("cl_div") == "yes"])
+    arm_bc_keep = _mom_stats([r for r in resolved_b if r.get("cl_div") == "no"])
+    arm_bc_div  = _mom_stats([r for r in resolved_b if r.get("cl_div") == "yes"])
+    cl_signals = sum(1 for r in takers + takers_b if r.get("cl_div") in ("yes", "no"))
     # Filtro ACELERACIÓN (el hallazgo sólido del lab) — sobre A y sobre B
     arm_ac_yes = _mom_stats([r for r in resolved if r.get("accel") == "yes"])
     arm_ac_no  = _mom_stats([r for r in resolved if r.get("accel") == "no"])
@@ -361,8 +362,8 @@ def api_momentum():
                     "resolved": len(resolved), "pending": pending,
                     "overall": overall, "by_move": by_move, "by_ask": by_ask,
                     "arm_b": arm_b, "arm_b_signals": len(takers_b),
-                    "arm_c_yes": arm_c_yes, "arm_c_no": arm_c_no, "cl_signals": cl_signals,
-                    "arm_bc_yes": arm_bc_yes, "arm_bc_no": arm_bc_no,
+                    "arm_c_keep": arm_c_keep, "arm_c_div": arm_c_div, "cl_signals": cl_signals,
+                    "arm_bc_keep": arm_bc_keep, "arm_bc_div": arm_bc_div,
                     "arm_ac_yes": arm_ac_yes, "arm_ac_no": arm_ac_no,
                     "arm_bac_yes": arm_bac_yes, "arm_bac_no": arm_bac_no,
                     "pnl1": _pnl1(resolved), "pnl1_b": _pnl1(resolved_b),

@@ -76,9 +76,10 @@
       <tbody id="brazos-body"></tbody>
     </table>
     <div class="sub" style="margin-top:8px">
-      <b>A</b> y <b>B</b> son dos apuestas INDEPENDIENTES con trades propios. <b>El filtro Chainlink NO es un brazo</b>:
-      parte los MISMOS trades de A según si Chainlink confirmaría el líder-por-Binance. Si
-      <span class="green">confirma</span> gana más que <span class="red">descarta</span>, añadir ese filtro mejoraría A.
+      <b>A</b> y <b>B</b> son dos apuestas INDEPENDIENTES con trades propios. <b>Los filtros NO son brazos</b>:
+      parten los MISMOS trades según una señal medida a 240s. El de <b>divergencia Chainlink</b> separa las
+      ventanas donde Chainlink se movió ≥$3 <span class="red">EN CONTRA</span> del líder-por-Binance (raras, ~10%)
+      de las <span class="green">alineadas</span> (el 90% normal). Si 'diverge' pierde, esquivarlas mejora A.
       Es solo medición (sombra): no cambia lo que opera A.
     </div>
   </div>
@@ -211,15 +212,15 @@ async function refresh(){
       `<tr><td colspan="6" class="muted" style="font-size:11px;text-transform:uppercase;letter-spacing:.06em">Filtro ACELERACIÓN sobre A (sombra — el hallazgo SÓLIDO del lab · el filtro SEGUIRÍA operando 'acelera' y dejaría de operar 'frena')</td></tr>` +
       brazoRow('↳ A · acelera','media',s.arm_ac_yes,'move aún vivo a 240s → el filtro los MANTIENE (queremos que ganen)') +
       brazoRow('↳ A · frena','down',s.arm_ac_no,'move ya girándose → el filtro los QUITA (queremos que pierdan)') +
-      `<tr><td colspan="6" class="muted" style="font-size:11px;text-transform:uppercase;letter-spacing:.06em">Filtro Chainlink sobre A (sombra secundaria — el filtro SEGUIRÍA operando 'confirma' y dejaría de operar 'descarta')</td></tr>` +
-      brazoRow('↳ A · confirma','media',s.arm_c_yes,'Chainlink coincide con el líder → el filtro los MANTIENE (queremos que ganen)') +
-      brazoRow('↳ A · descarta','down',s.arm_c_no,'Chainlink discrepa del líder → el filtro los QUITA (queremos que pierdan)') +
+      `<tr><td colspan="6" class="muted" style="font-size:11px;text-transform:uppercase;letter-spacing:.06em">Filtro DIVERGENCIA Chainlink sobre A (sombra — el lab ve la señal en la divergencia, no en el 90% que confirma · MANTIENE 'alineado', QUITA 'diverge')</td></tr>` +
+      brazoRow('↳ A · alineado','media',s.arm_c_keep,'Chainlink NO diverge (caso normal ~90%) → el filtro los MANTIENE (queremos que ganen)') +
+      brazoRow('↳ A · diverge','down',s.arm_c_div,'Chainlink se movió ≥$3 EN CONTRA a 240s → el filtro los QUITA (queremos que pierdan)') +
       `<tr><td colspan="6" class="muted" style="font-size:11px;text-transform:uppercase;letter-spacing:.06em">Filtro ACELERACIÓN sobre B (sombra — el filtro MANTIENE 'acelera', QUITA 'frena')</td></tr>` +
       brazoRow('↳ B · acelera','media',s.arm_bac_yes,'move aún vivo → el despreciado sería mispricing real (queremos que ganen)') +
       brazoRow('↳ B · frena','down',s.arm_bac_no,'move ya girándose → el filtro los QUITA (queremos que pierdan)') +
-      `<tr><td colspan="6" class="muted" style="font-size:11px;text-transform:uppercase;letter-spacing:.06em">Filtro Chainlink sobre B (sombra secundaria)</td></tr>` +
-      brazoRow('↳ B · confirma','media',s.arm_bc_yes,'Chainlink coincide con el líder → el filtro los MANTIENE (queremos que ganen)') +
-      brazoRow('↳ B · descarta','down',s.arm_bc_no,'Chainlink discrepa → el filtro los QUITA (queremos que pierdan)');
+      `<tr><td colspan="6" class="muted" style="font-size:11px;text-transform:uppercase;letter-spacing:.06em">Filtro DIVERGENCIA Chainlink sobre B (sombra · MANTIENE 'alineado', QUITA 'diverge')</td></tr>` +
+      brazoRow('↳ B · alineado','media',s.arm_bc_keep,'Chainlink NO diverge → el filtro los MANTIENE (queremos que ganen)') +
+      brazoRow('↳ B · diverge','down',s.arm_bc_div,'Chainlink se movió ≥$3 EN CONTRA → el filtro los QUITA (queremos que pierdan)');
 
     $('by-move').innerHTML =
       statRow('suave','suave',s.by_move['suave']) +
