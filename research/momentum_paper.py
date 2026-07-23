@@ -37,6 +37,27 @@ CL_DIV_MIN = 3          # $ — DIVERGENCIA REAL de Chainlink: se movió ≥$3 E
                         # Binance a 240s. Por debajo = Chainlink casi plano/lag, NO divergencia.
                         # El lab ve la señal AQUÍ (discrepa → coinflip 53.8%), no en el "confirma"
                         # que es el ~90% por defecto y ≈ tasa base (no filtra nada).
+
+# ── PRE-REGISTRO A-v3 (brazo A filtrado por ACELERACIÓN) — GO/NO-GO a LIVE minúsculo ───────────
+# Fijado ANTES del resultado final, para NO mover la portería (a n=51 el A crudo cruzó y se descruzó).
+# A-v3 = operar SOLO cuando accel=="yes" (comprar el líder solo si el move sigue vivo a 240s), regla
+# brazo A v2 intacta (5m · move $8-45 · ask 52-72¢). El bot DRY sigue midiendo acelera Y frena.
+# Estado al fijarlo (jul 2026): n=41 acelera, win 78.0%, EV +20.2%, cruzó significancia por 0.4pp
+# (IC_inf 65.4 > ask 65.0) = FRÁGIL; amortigua el día malo (07-22 acelera −13% vs A crudo −28%) pero
+# NO lo esquiva; la magnitud de la aceleración no aporta (FEATURE 1b negativo). El precio está exprimido.
+#
+# GO a live (deben cumplirse las TRES):
+#   1. "A acelera" IC_inferior > ask medio con n>=60 resueltos (que AGUANTE bien pasado el cruce de 0.4pp).
+#   2. Sobrevive un 2º día de reversión: un día con A crudo <= −15% EV donde "A acelera" quede
+#      >= ~break-even (la durabilidad que hoy falta — solo hemos visto el 07-22).
+#   3. Gap acelera >= frena positivo en la MAYORÍA de días (el split sigue siendo direccional real).
+# SIZING (si GO): stake FIJO minúsculo por trade; solo accel==yes; sin escalar.  [importe $ = decisión
+#   del usuario, es su riesgo — placeholder $1-2]
+# BUDGET / kill-switch: stop DIARIO si P&L del día <= −$X (A-v3 tiene días rojos igual); tope TOTAL duro =
+#   dinero de experimento, no inversión; al tocarlo, parar y re-evaluar.  [importes $ = decisión del usuario]
+# NO-GO / abandonar A-v3: si se descruza y sigue descruzado a n>=60; o si el 2º día malo deja "A acelera"
+#   profundamente negativo (= el amortiguar fue suerte). NADA de live hasta cumplir las tres de GO.
+# ───────────────────────────────────────────────────────────────────────────────────────────────
 LOG = os.path.join(os.path.dirname(__file__), "momentum_paper_log.csv")
 HEADER = ["ws","slug","move","leader","ask","status","winner","won","cid","res","ask2","cl_confirm","accel","cl_div"]
 OLD_HEADERS = [["ws","slug","move","leader","ask","status","winner","won","cid"],
