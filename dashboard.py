@@ -340,6 +340,25 @@ def api_momentum():
     else:
         verdict = ("dead", "≤ break-even con n≥40: 12ª muerte — el edge no se transfiere tal cual.")
 
+    # Veredicto del CANDIDATO Nº1: brazo A-v3 = A filtrado por ACELERACIÓN (accel=="yes"). Es el
+    # único lead que separa, con doble respaldo (forward + lab n=250 train/test ✓). Pre-registrado:
+    # ≥30 resueltos, EV>0 (win>ask), significativo si IC inferior > ask.
+    av = arm_ac_yes
+    if av is None or av["n"] < 30:
+        accel_verdict = ("wait", f"A-v3 (solo 'acelera'): {av['n'] if av else 0}/30 resueltos. "
+                         f"Respaldo lab n=250 train/test ✓; falta confirmarlo en vivo. Sin veredicto aún.")
+    elif av["win_rate"] > av["avg_ask"]:
+        _ev = f"{'+' if av['ev'] >= 0 else ''}{av['ev']}%"
+        if av["ci_lo"] > av["avg_ask"]:
+            accel_verdict = ("real", f"A-v3 'acelera' PREDICE: win {av['win_rate']}% > ask {av['avg_ask']}% "
+                             f"SIGNIFICATIVO (n={av['n']}, EV {_ev}). Candidato a filtro real + live minúsculo.")
+        else:
+            accel_verdict = ("maybe", f"A-v3 'acelera' positivo pero no significativo: win {av['win_rate']}% "
+                             f"vs ask {av['avg_ask']}% (n={av['n']}, EV {_ev}, IC {av['ci_lo']}-{av['ci_hi']}). Seguir a 30+.")
+    else:
+        accel_verdict = ("dead", f"A-v3 'acelera' ≤ break-even con n={av['n']} (win {av['win_rate']}% ≤ "
+                         f"ask {av['avg_ask']}%) — la aceleración no filtra en vivo. Revisar.")
+
     # curva P&L acumulado por $1, por bucket de move
     res_sorted = sorted(resolved, key=lambda r: int(r["ws"]))
     cum = {"suave": 0.0, "media": 0.0, "fuerte": 0.0}
@@ -367,7 +386,8 @@ def api_momentum():
                     "arm_ac_yes": arm_ac_yes, "arm_ac_no": arm_ac_no,
                     "arm_bac_yes": arm_bac_yes, "arm_bac_no": arm_bac_no,
                     "pnl1": _pnl1(resolved), "pnl1_b": _pnl1(resolved_b),
-                    "verdict": {"kind": verdict[0], "text": verdict[1]}},
+                    "verdict": {"kind": verdict[0], "text": verdict[1]},
+                    "accel_verdict": {"kind": accel_verdict[0], "text": accel_verdict[1]}},
         "trades": [trade(r) for r in shown],
         "curve": curve,
     })

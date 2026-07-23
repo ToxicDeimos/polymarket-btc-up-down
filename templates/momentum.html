@@ -58,6 +58,7 @@
   <div class="card"><h2>Resueltos</h2><div class="val" id="k-res">—</div><div class="sub" id="k-pend">—</div></div>
   <div class="card"><h2>WIN</h2><div class="val" id="k-wr">—</div><div class="sub" id="k-ci">vs ask medio (break-even)</div></div>
   <div class="card"><h2>EV / trade</h2><div class="val" id="k-ev">—</div><div class="sub">win/ask − 1</div></div>
+  <div class="card" style="border-color:#1f6f3a"><h2>★ A-v3 · acelera (nº1)</h2><div class="val" id="k-accel">—</div><div class="sub" id="k-accel-sub">move vivo a 240s · lab n=250 ✓</div></div>
   <div class="card"><h2>Progreso veredicto</h2><div class="val" id="k-prog">—</div><div class="sub">≥40 resueltos, EV>0</div></div>
   <div class="card"><h2>Brazo B &lt;40¢</h2><div class="val" id="k-armb">—</div><div class="sub" id="k-armb-sub">líder despreciado · ref lab 78.4%@33.5%</div></div>
   <div class="card"><h2>P&amp;L simulado</h2><div class="val" id="k-pnl">—</div>
@@ -66,6 +67,7 @@
       $/trade · <span id="k-pnl-b">brazo B: —</span></div></div>
 </div>
 
+<div class="verdict wait" id="accel-verdict" style="border-width:2px">—</div>
 <div class="verdict wait" id="verdict">—</div>
 
 <div class="section">
@@ -193,8 +195,20 @@ async function refresh(){
       $('k-armb').textContent = s.arm_b_signals ? `${s.arm_b_signals} señal(es)` : '—';
     }
 
+    // Candidato Nº1: A-v3 (solo 'acelera') — tarjeta KPI + banner destacado arriba
+    const ac=s.arm_ac_yes;
+    if(ac){
+      $('k-accel').textContent = `${ac.win_rate}%`;
+      $('k-accel').className = `val ${ac.win_rate>ac.avg_ask?'green':'red'}`;
+      $('k-accel-sub').textContent = `n=${ac.n}/30 · ask ${ac.avg_ask}% · EV ${ac.ev>=0?'+':''}${ac.ev}%`;
+    } else { $('k-accel').textContent='—'; $('k-accel-sub').textContent='sin trades con aceleración aún'; }
+    if(s.accel_verdict){
+      $('accel-verdict').className = `verdict ${s.accel_verdict.kind}`;
+      $('accel-verdict').textContent = '★ Nº1 · ' + s.accel_verdict.text;
+    }
+
     $('verdict').className = `verdict ${s.verdict.kind}`;
-    $('verdict').textContent = s.verdict.text;
+    $('verdict').textContent = 'Brazo A crudo · ' + s.verdict.text;
 
     function brazoRow(label, cls, st, nota){
       if(!st) return `<tr><td><span class="pill ${cls}">${label}</span></td><td colspan="5" class="muted">sin trades resueltos</td></tr>`;
