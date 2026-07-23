@@ -91,6 +91,8 @@ def main():
         if s0 is None or s30 is None: continue
         vel=s0-s30                                           # move de los últimos 30s
         accel=(vel>0)==(move>0)                              # ¿sigue en la dirección del líder?
+        vel_lead = vel if move>0 else -vel                   # velocidad EN la dirección del líder ($, >0 acelera)
+        vel_frac = vel_lead/abs(move) if move else 0         # fracción del move total hecha en los últimos 30s
         cl0=lcl(t); clw=lcl(ws)
         clmove=(cl0-clw) if (cl0 is not None and clw is not None) else None
         cl_agree=None if clmove is None else ((clmove>0)==(move>0))
@@ -104,7 +106,8 @@ def main():
             winner="Up" if c>=o else "Down"; res="bin"
         won=1 if leader==winner else 0
         R.append({"day":dt.datetime.utcfromtimestamp(ws).strftime("%m-%d"),
-                  "won":won,"accel":accel,"cl_agree":cl_agree,"res":res})
+                  "won":won,"accel":accel,"cl_agree":cl_agree,"res":res,
+                  "vel_lead":vel_lead,"vel_frac":vel_frac})
 
     if len(R)<30:
         print(f"\npocos fills momentum en fase con datos de libro ({len(R)}) — deja correr el colector más.")
@@ -126,6 +129,32 @@ def main():
         if gtr>0.05 and gte>0.05: print("  → la feature GENERALIZA (acel gana más en train Y test) = selección/filtro REAL ✓")
         elif gtr>0.05: print("  → funciona en train pero NO en test = overfit, descartar")
         else: print("  → sin señal clara en la aceleración")
+
+    print("\n=== FEATURE 1b: aceleración GRADUADA (¿un umbral por MAGNITUD separa mejor que el binario?) ===")
+    print("  vel_lead = $ movidos en la dirección del líder en los últimos 30s (>0 acelera, <0 se gira).")
+    vv=[x for x in R if x.get("vel_lead") is not None]
+    if len(vv)>=40:
+        print("  win por FRANJA de vel_lead:")
+        for lo,hi,lab in [(-1e9,-3,"se gira <−$3"),(-3,0,"plano −3..0"),(0,3,"flojo $0..3"),
+                          (3,8,"medio $3..8"),(8,1e9,"fuerte >$8")]:
+            seg=[x for x in vv if lo<=x["vel_lead"]<hi]
+            if seg: print(f"     {lab:>14}  n={len(seg):>3}  win {wr(seg):.1%}")
+        print("  UMBRAL vel_lead>=T (mantiene) vs <T (descarta), TRAIN/TEST por día:")
+        dl=sorted({x["day"] for x in vv}); h=len(dl)//2; trd=set(dl[:h]); ted=set(dl[h:])
+        best=None
+        for T in (0,2,3,5,8):
+            keep=[x for x in vv if x["vel_lead"]>=T]; drop=[x for x in vv if x["vel_lead"]<T]
+            if not keep or not drop: continue
+            gtr=(wr([x for x in keep if x['day'] in trd]) or 0)-(wr([x for x in drop if x['day'] in trd]) or 0)
+            gte=(wr([x for x in keep if x['day'] in ted]) or 0)-(wr([x for x in drop if x['day'] in ted]) or 0)
+            gen="GENERALIZA ✓" if (gtr>0.05 and gte>0.05) else ("overfit" if gtr>0.05 else "sin señal")
+            print(f"     T=${T:>2}: mantiene n={len(keep):>3} win {wr(keep):.1%} | descarta n={len(drop):>3} "
+                  f"win {wr(drop):.1%} | gap train {gtr:+.1%} test {gte:+.1%} → {gen}")
+            if gtr>0.05 and gte>0.05 and (best is None or wr(keep)>best[1]): best=(T,wr(keep))
+        if best: print(f"  → mejor umbral que GENERALIZA: vel_lead>=${best[0]} (win {best[1]:.1%}). Candidato a filtro DURO.")
+        else:    print("  → ningún umbral por magnitud generaliza mejor que el binario → quedarse con accel binario.")
+    else:
+        print(f"  pocos fills con velocidad ({len(vv)}) — deja correr el colector.")
 
     # SOLO fills resueltos por Chainlink (sin la contaminación de resolver con Binance)
     Rc=[x for x in R if x["cl_agree"] is not None and x.get("res")=="cl"]
