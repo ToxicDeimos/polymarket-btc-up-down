@@ -154,6 +154,48 @@ def backfill_cldiv():
             w=csv.DictWriter(f,fieldnames=list(rows[0].keys())); w.writeheader(); w.writerows(rows)
     return n
 
+def backfill_accel():
+    """Rellena accel (¿el move sigue VIVO a 240s? = velocidad últimos 30s en la dirección del líder)
+    para filas sin él, desde lab/spot_*.csv (Binance) del colector. Feature PRE-OBSERVABLE (no
+    look-ahead: usa spot en ws+210 y ws+240, antes de resolver). OFFLINE, idempotente. Devuelve nº.
+    Así el candidato Nº1 (A-v3) se evalúa sobre TODO el histórico ya, no solo desde que se logueó."""
+    if not os.path.exists(LOG): return 0
+    rows=list(csv.DictReader(open(LOG,encoding="utf-8")))
+    if not rows or "accel" not in rows[0]: return 0
+    cache={}
+    def series(day):
+        if day in cache: return cache[day]
+        arr=[]; p=os.path.join(CL_DIR,f"spot_{day}.csv")
+        if os.path.exists(p):
+            try:
+                with open(p,encoding="utf-8") as f:
+                    for ln in f:
+                        a=ln.split(",")
+                        if a and a[0]=="ts": continue
+                        try: arr.append((int(a[0]),float(a[1])))
+                        except Exception: pass
+            except Exception: pass
+        arr.sort(); cache[day]=arr; return arr
+    def at(ts,maxage=8):
+        arr=series(time.strftime("%Y%m%d",time.gmtime(ts)))
+        if not arr: return None
+        ks=[x[0] for x in arr]; i=bisect.bisect_right(ks,ts)-1
+        return arr[i][1] if i>=0 and ts-arr[i][0]<=maxage else None
+    n=0
+    for r in rows:
+        if r.get("accel") not in (None,""): continue
+        if r.get("status") not in ("taker","taker_b","skip_price"): continue
+        try: ws=int(r["ws"]); mv=float(r["move"])
+        except Exception: continue
+        e=at(ws+ENTRY); e30=at(ws+ENTRY-30)                  # spot a 240s y a 210s (últimos 30s)
+        if e is None or e30 is None: continue
+        r["accel"]="yes" if ((e-e30)>0)==(mv>0) else "no"
+        n+=1
+    if n:
+        with open(LOG,"w",newline="",encoding="utf-8") as f:
+            w=csv.DictWriter(f,fieldnames=list(rows[0].keys())); w.writeheader(); w.writerows(rows)
+    return n
+
 def backfill_pending(verbose=False):
     """Rellena pendientes y CORRIGE filas resueltas por el antiguo respaldo Binance, usando
     SIEMPRE el ganador real del CLOB (la liquidación de Polymarket). Idempotente: solo toca
@@ -228,8 +270,8 @@ def run_window(win):
 def analyze():
     if not os.path.exists(LOG): print("sin log aún"); return
     ensure_log()
-    nd=backfill_cldiv()
-    if nd: print(f"cl_div rellenado en {nd} filas desde los CSV de Chainlink del colector")
+    nd=backfill_cldiv(); na=backfill_accel()
+    if nd or na: print(f"backfill desde CSV del colector: cl_div {nd} filas, accel {na} filas")
     rows=list(csv.DictReader(open(LOG,encoding="utf-8")))
     from collections import Counter
     st=Counter(r["status"] for r in rows)
@@ -326,13 +368,13 @@ def analyze():
 def main():
     if "--analyze" in sys.argv: analyze(); return
     if "--resolve" in sys.argv:
-        ensure_log(); f,x=backfill_pending(verbose=True); nd=backfill_cldiv()
-        print(f"rellenadas {f} | corregidas {x} | cl_div {nd}"); return
+        ensure_log(); f,x=backfill_pending(verbose=True); nd=backfill_cldiv(); na=backfill_accel()
+        print(f"rellenadas {f} | corregidas {x} | cl_div {nd} | accel {na}"); return
     print("="*60+"\n  MOMENTUM PAPER BOT (DRY) — comprar el líder tarde (5m)\n"+"="*60)
     ensure_log()
     f,x=backfill_pending(verbose=True)
-    nd=backfill_cldiv()
-    if f or x or nd: print(f"backfill inicial: rellenadas {f}, corregidas {x}, cl_div {nd}")
+    nd=backfill_cldiv(); na=backfill_accel()
+    if f or x or nd or na: print(f"backfill inicial: rellenadas {f}, corregidas {x}, cl_div {nd}, accel {na}")
     seen=set(); last_bf=now()
     while True:
         try:
@@ -343,8 +385,8 @@ def main():
                     seen.add(ws); run_window(w)
                     if len(seen)>500: seen=set(list(seen)[-100:])
             if now()-last_bf>600:
-                f,x=backfill_pending(); nd=backfill_cldiv(); last_bf=now()
-                if f or x or nd: print(f"backfill: rellenadas {f}, corregidas {x}, cl_div {nd}")
+                f,x=backfill_pending(); nd=backfill_cldiv(); na=backfill_accel(); last_bf=now()
+                if f or x or nd or na: print(f"backfill: rellenadas {f}, corregidas {x}, cl_div {nd}, accel {na}")
             time.sleep(5)
         except KeyboardInterrupt:
             print("\nparado."); break
