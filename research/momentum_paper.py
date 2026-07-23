@@ -332,6 +332,20 @@ def analyze():
         rep("A acelera", [r for r in Ac if r["accel"]=="yes"])
         rep("A frena",   [r for r in Ac if r["accel"]=="no"])
         print("  (si 'acelera' gana más que 'frena' → el filtro que esquiva los días malos)")
+        # TEST DE MECANISMO: ¿la mitad 'acelera' sobrevivió los días malos (07-22 = A crudo −28%)?
+        print("  — ACELERA vs FRENA por DÍA (¿el filtro esquiva los días de reversión?):")
+        def _seg(rs):
+            if not rs: return "     —          "
+            wr=sum(int(r["won"]) for r in rs)/len(rs)
+            ev=sum((1/float(r["ask"])-1) if r["won"]=="1" else -1 for r in rs)/len(rs)
+            return f"n={len(rs):>2} win {wr:>5.1%} EV {ev*100:>+6.1f}%"
+        for d in sorted({_d(r) for r in Ac}):
+            acy=[r for r in Ac if _d(r)==d and r["accel"]=="yes"]
+            acn=[r for r in Ac if _d(r)==d and r["accel"]=="no"]
+            evy=(sum((1/float(r["ask"])-1) if r["won"]=="1" else -1 for r in acy)/len(acy)) if acy else 0
+            evn=(sum((1/float(r["ask"])-1) if r["won"]=="1" else -1 for r in acn)/len(acn)) if acn else 0
+            mark=" ✓ filtro salva" if (acy and acn and evy>0 and evn<0) else ""
+            print(f"    {d}   acelera {_seg(acy)}   |   frena {_seg(acn)}{mark}")
     else:
         print("  (aún sin datos de aceleración — se loguea desde ahora)")
 
