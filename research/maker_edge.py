@@ -23,7 +23,9 @@ Autónomo (stdlib).
 import os, sys, csv, glob, math, bisect
 
 DIR    = os.path.join(os.path.dirname(__file__), "lab")
-MAXAGE = 12      # s de frescura del libro
+# frescura del libro para clasificar maker/taker. Con libro viejo, un taker que cruzó DESPUÉS de que
+# el libro se moviera puede contarse como maker → control: correr también con 5 (python maker_edge.py 5)
+MAXAGE = int(sys.argv[1]) if len(sys.argv) > 1 and sys.argv[1].isdigit() else 12
 MIN_N  = 100     # para identificar el "top por z" que se excluye en el leave-out
 TOPK   = 6
 ZONES  = [(0, .20, "<20c"), (.20, .40, "20-40c"), (.40, .52, "40-52c"), (.52, .72, "52-72c"),
