@@ -19,6 +19,7 @@ PRICES_FILE  = os.path.join(BASE, "prices.csv")
 BRAIN_FILE   = os.path.join(BASE, "brain_stats.json")
 MAKER_FILE   = os.path.join(BASE, "research", "maker_paper_log.csv")
 MOM_FILE     = os.path.join(BASE, "research", "momentum_paper_log.csv")
+MAKER2_FILE  = os.path.join(BASE, "research", "maker2_paper_log.csv")
 
 
 # ── Rutas ─────────────────────────────────────────────────────────────────────
@@ -390,6 +391,76 @@ def api_momentum():
                     "accel_verdict": {"kind": accel_verdict[0], "text": accel_verdict[1]}},
         "trades": [trade(r) for r in shown],
         "curve": curve,
+    })
+
+
+def _m2_stats(rows):
+    """Estadística de fills maker2: EDGE = win − bid (EV por share), rel = EDGE/bid (retorno relativo)."""
+    n = len(rows)
+    if n == 0:
+        return None
+    wins = sum(1 for r in rows if r.get("won") == "1")
+    bids = [float(r["bid"]) for r in rows if r.get("bid")]
+    wr = wins / n
+    ab = statistics.mean(bids) if bids else 0.0
+    se = math.sqrt(wr * (1 - wr) / n)
+    return {"n": n, "win_rate": round(wr * 100, 1),
+            "ci_lo": round(max(0, wr - 1.96 * se) * 100, 1),
+            "ci_hi": round(min(1, wr + 1.96 * se) * 100, 1),
+            "avg_bid": round(ab * 100, 1), "edge": round((wr - ab) * 100, 2),
+            "rel": round((wr - ab) / ab * 100, 1) if ab else 0.0}
+
+
+@app.route("/maker2")
+def maker2():
+    return render_template("maker2.html")
+
+
+@app.route("/api/maker2")
+def api_maker2():
+    rows = _read_csv(MAKER2_FILE)
+    if not rows:
+        return jsonify({"summary": {"n": 0}, "trades": []})
+    from collections import Counter
+    st = Counter(r.get("status", "") for r in rows)
+    posted  = [r for r in rows if r.get("status") in ("filled", "no_fill")]
+    filled  = [r for r in rows if r.get("status") == "filled"]
+    F       = [r for r in filled if r.get("won") in ("0", "1")]          # fills resueltos
+    pending = len(filled) - len(F)
+    fillrate = round(len(filled) / len(posted) * 100, 1) if posted else 0.0
+    overall = _m2_stats(F)
+    by_zone = {z: _m2_stats([r for r in F if lo <= float(r["bid"]) < hi])
+               for lo, hi, z in [(0, .20, "<20c"), (.20, .40, "20-40c")]}
+    # SOMBRA: si TODAS las posteadas se hubieran llenado (no_fill incluidas). El hueco entre esta y
+    # la de fills reales = el coste de la SELECCIÓN ADVERSA (te llenan cuando va en tu contra).
+    shadow = _m2_stats([r for r in posted if r.get("won") in ("0", "1")])
+
+    if overall is None or overall["n"] < 40:
+        verdict = ("wait", f"{overall['n'] if overall else 0}/40 fills resueltos — sin veredicto.")
+    elif overall["edge"] > 0:
+        if overall["ci_lo"] > overall["avg_bid"]:
+            verdict = ("real", f"EDGE del spread SOBREVIVE la selección adversa (win {overall['win_rate']}% "
+                       f"> bid {overall['avg_bid']}%, significativo, n={overall['n']}). Primer edge desplegable.")
+        else:
+            verdict = ("maybe", f"Positivo pero no significativo — seguir (win {overall['win_rate']}% vs "
+                       f"bid {overall['avg_bid']}%, EDGE {overall['edge']:+}pp, n={overall['n']}).")
+    else:
+        verdict = ("dead", f"≤ break-even (EDGE {overall['edge']:+}pp): la selección adversa se come el "
+                   f"spread. 13ª muerte, documentar.")
+
+    def trade(r):
+        return {"ws": int(r["ws"]), "slug": r.get("slug"), "cheap": r.get("cheap"),
+                "best_bid": r.get("best_bid"), "best_ask": r.get("best_ask"), "bid": r.get("bid"),
+                "queue": r.get("queue_ahead"), "vol": r.get("vol_hit"),
+                "status": r.get("status"), "winner": r.get("winner"), "won": r.get("won")}
+    shown = [r for r in rows if r.get("status") in ("filled", "no_fill", "skip_price")][-80:][::-1]
+
+    return jsonify({
+        "summary": {"n": len(rows), "status": dict(st), "posted": len(posted),
+                    "filled": len(filled), "resolved": len(F), "pending": pending,
+                    "fillrate": fillrate, "overall": overall, "by_zone": by_zone,
+                    "shadow": shadow, "verdict": {"kind": verdict[0], "text": verdict[1]}},
+        "trades": [trade(r) for r in shown],
     })
 
 

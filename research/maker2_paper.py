@@ -90,6 +90,30 @@ def winner_clob(cid):
         if t.get("winner") is True: return t.get("outcome")
     return None
 
+def backfill_pending(verbose=False):
+    """Rellena el ganador (SOLO vía CLOB = liquidación real de Polymarket) en filas que quedaron
+    pendientes porque el CLOB tardó >5min en publicarlo. Idempotente: solo toca filas sin 'winner'
+    que tengan lado (cheap) y cid. Resuelve también no_fill/skip_price = datos-sombra (qué habría
+    pasado). NUNCA usa Binance. Corre al arrancar y cada ~10 min."""
+    if not os.path.exists(LOG): return 0
+    rows = list(csv.DictReader(open(LOG, encoding="utf-8")))
+    if not rows: return 0
+    n = 0
+    for r in rows:
+        if r.get("winner"): continue                       # ya resuelto
+        if not r.get("cheap") or not r.get("cid"): continue
+        w = winner_clob(r["cid"])
+        if w is None: continue                             # aún no liquidado → sigue pendiente
+        r["winner"] = w
+        r["won"] = "1" if w == r["cheap"] else "0"
+        n += 1
+        time.sleep(0.1)
+    if n:
+        with open(LOG, "w", newline="", encoding="utf-8") as f:
+            wr = csv.DictWriter(f, fieldnames=HEADER); wr.writeheader(); wr.writerows(rows)
+    if verbose: print(f"backfill: {n} filas resueltas por CLOB")
+    return n
+
 def run_window(win):
     ws, slug, cid, toks = win["ws"], win["slug"], win["cid"], win["toks"]
     print(f"\n── {slug} — entrada maker a {ENTRY}s")
@@ -175,9 +199,12 @@ def analyze():
 
 def main():
     if "--analyze" in sys.argv: analyze(); return
+    if "--resolve" in sys.argv: ensure_log(); print(f"rellenadas {backfill_pending(verbose=True)}"); return
     print("=" * 60 + "\n  MAKER2 PAPER (DRY) — cobrar el spread en <40¢, cola conservadora\n" + "=" * 60)
     ensure_log()
-    seen = set()
+    n = backfill_pending(verbose=True)
+    if n: print(f"backfill inicial: {n} filas")
+    seen = set(); last_bf = now()
     while True:
         try:
             t = now(); ws = t - t % 300
@@ -186,6 +213,9 @@ def main():
                 if w:
                     seen.add(ws); run_window(w)
                     if len(seen) > 500: seen = set(list(seen)[-100:])
+            if now() - last_bf > 600:
+                nb = backfill_pending(); last_bf = now()
+                if nb: print(f"backfill: {nb} filas")
             time.sleep(3)
         except KeyboardInterrupt: print("\nparado."); break
         except Exception as ex: print("  err:", ex); time.sleep(10)
