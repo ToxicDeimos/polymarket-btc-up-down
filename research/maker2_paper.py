@@ -33,8 +33,13 @@ BID_MIN   = 0.03       # no postear por debajo (ruido/resolución)
 BID_MAX   = 0.40       # zona BARATA: donde el retorno relativo del spread es grande
 POLL      = 3          # s entre sondeos del libro/cinta mientras la orden está viva
 LOG = os.path.join(os.path.dirname(__file__), "maker2_paper_log.csv")
-HEADER = ["ws","slug","cheap","best_bid","best_ask","bid","queue_ahead","vol_hit",
+# fill_opt (nuevo) = llenado OPTIMISTA (frente de cola: te llenan al primer print a tu precio).
+# status "filled" = llenado CONSERVADOR (final de cola: solo cuando el volumen vendido supera la cola
+# que había delante). El par acota la verdad: suelo (conservador) vs techo (optimista).
+HEADER = ["ws","slug","cheap","best_bid","best_ask","bid","queue_ahead","vol_hit","fill_opt",
           "status","fill_price","winner","won","cid"]
+OLD_HEADER = ["ws","slug","cheap","best_bid","best_ask","bid","queue_ahead","vol_hit",
+              "status","fill_price","winner","won","cid"]
 
 def get(url, tries=2):
     for i in range(tries):
@@ -48,10 +53,24 @@ def get(url, tries=2):
 def now(): return int(time.time())
 
 def ensure_log():
+    """Migra el log a HEADER actual. fill_opt de filas viejas se DERIVA del vol_hit ya logueado
+    (si hubo cualquier venta a nuestro precio, el frente de cola se habría llenado)."""
     if not os.path.exists(LOG): return
     with open(LOG, encoding="utf-8") as f: first = f.readline().strip()
-    if first != ",".join(HEADER):
-        print(f"(!) cabecera de log inesperada — revisar antes de continuar")
+    if first == ",".join(HEADER): return
+    if first.split(",") == OLD_HEADER:
+        rows = list(csv.DictReader(open(LOG, encoding="utf-8")))
+        for r in rows:
+            st = r.get("status")
+            try: v = float(r.get("vol_hit") or 0)
+            except Exception: v = 0.0
+            r["fill_opt"] = "yes" if (st == "filled" or v > 0) else ("no" if st == "no_fill" else "")
+        with open(LOG, "w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=HEADER); w.writeheader()
+            for r in rows: w.writerow({k: r.get(k, "") for k in HEADER})
+        print(f"log migrado (+fill_opt), {len(rows)} filas conservadas")
+    else:
+        print("(!) cabecera de log inesperada — revisar antes de continuar")
 
 def log(row):
     new = not os.path.exists(LOG)
@@ -125,14 +144,17 @@ def run_window(win):
     if bb is None: return
     bid = round(bb, 3)                                  # posteamos EN el mejor bid (cobra el spread)
     if not (BID_MIN <= bid <= BID_MAX):
-        log([ws, slug, cheap, bb, ba, bid, "", "", "skip_price", "", "", "", cid]);
+        log([ws, slug, cheap, bb, ba, bid, "", "", "", "skip_price", "", "", "", cid]);
         print(f"   skip: bid {bid} fuera de [{BID_MIN},{BID_MAX}]"); return
     queue = round(bsz, 1)                               # profundidad DELANTE de nosotros en la cola
     tok = toks[cheap]
     print(f"   POST bid {bid} en {cheap}  (ask {ba}, cola delante {queue})")
 
-    # ── cola CONSERVADORA: solo FILL cuando el volumen vendido a <= bid supera la cola de delante ──
-    seen = set(); vol_hit = 0.0; status = "no_fill"; last = ws + ENTRY
+    # ── DOS modelos de cola sobre la MISMA orden (bracket suelo/techo) ──────────────────────────
+    #   fill_opt (techo) = frente de cola: te llenas al primer print vendido a tu precio.
+    #   status filled (suelo) = final de cola: solo cuando el volumen vendido supera la cola de delante.
+    #   NO se rompe el bucle: se vigila toda la ventana para capturar ambos.
+    seen = set(); vol_hit = 0.0; fill_opt = "no"; status = "no_fill"; last = ws + ENTRY
     while now() < ws + 300:
         feed = get(f"https://data-api.polymarket.com/trades?market={cid}&limit=100") or []
         for t in feed:
@@ -144,8 +166,10 @@ def run_window(win):
             except Exception: continue
             if tt < last or tp > bid: continue          # solo flujo NUEVO vendido a <= nuestro bid
             seen.add(h); vol_hit += tsz
-        if vol_hit > queue:                             # ya nos habría tocado en la cola
-            status = "filled"; print(f"   FILL @ {bid}  (vol vendido {vol_hit:.1f} > cola {queue})"); break
+        if vol_hit > 0 and fill_opt == "no":
+            fill_opt = "yes"; print(f"   fill OPTIMISTA @ {bid} (primer print vendido)")
+        if vol_hit > queue and status != "filled":
+            status = "filled"; print(f"   fill CONSERVADOR @ {bid} (vol {vol_hit:.1f} > cola {queue})")
         time.sleep(POLL)
 
     # ── resolución por CLOB (Chainlink) ──
@@ -155,47 +179,56 @@ def run_window(win):
         win_side = winner_clob(cid)
         if win_side is None: time.sleep(15)
     won = "" if win_side is None else (1 if win_side == cheap else 0)
-    log([ws, slug, cheap, bb, ba, bid, queue, round(vol_hit, 1),
+    log([ws, slug, cheap, bb, ba, bid, queue, round(vol_hit, 1), fill_opt,
          status, bid if status == "filled" else "", win_side or "", won, cid])
-    print(f"   -> {status} | winner {win_side or 'PEND'} | won {won}")
+    print(f"   -> cons={status} opt={fill_opt} | winner {win_side or 'PEND'} | won {won}")
+
+def _ev(rs):
+    if not rs: return None
+    n = len(rs); wr = sum(int(r["won"]) for r in rs) / n; ap = sum(float(r["bid"]) for r in rs) / n
+    return wr - ap
 
 def analyze():
     if not os.path.exists(LOG): print("sin log"); return
+    ensure_log(); backfill_pending()
     rows = list(csv.DictReader(open(LOG, encoding="utf-8")))
-    F = [r for r in rows if r["status"] == "filled" and r["won"] in ("0", "1")]
     from collections import Counter
+    posted = [r for r in rows if r.get("status") in ("filled", "no_fill")]
+    Fc = [r for r in rows if r.get("status") == "filled" and r.get("won") in ("0", "1")]   # SUELO
+    Fo = [r for r in rows if r.get("fill_opt") == "yes" and r.get("won") in ("0", "1")]     # TECHO
     print(f"ventanas: {len(rows)}  ·  {dict(Counter(r['status'] for r in rows))}")
-    print(f"FILLS resueltos: {len(F)}")
-    if not F: print("  (aún sin fills — el bot solo cuenta fill cuando la cola de delante se agota)"); return
+    frc = len([r for r in rows if r.get('status') == 'filled']) / len(posted) if posted else 0
+    fro = len([r for r in rows if r.get('fill_opt') == 'yes']) / len(posted) if posted else 0
+    print(f"posteadas: {len(posted)}  ·  tasa de llenado — CONSERVADOR {frc:.0%} (final de cola) / "
+          f"OPTIMISTA {fro:.0%} (frente de cola)")
 
     def rep(label, rs):
         n = len(rs)
-        if not n: print(f"  {label:<18} sin fills"); return
-        wr = sum(int(r["won"]) for r in rs) / n
-        ap = sum(float(r["bid"]) for r in rs) / n
-        ev = wr - ap
-        se = math.sqrt(wr * (1 - wr) / n)
-        rel = ev / ap * 100 if ap else 0
+        if not n: print(f"  {label:<22} sin fills"); return
+        wr = sum(int(r["won"]) for r in rs) / n; ap = sum(float(r["bid"]) for r in rs) / n
+        ev = wr - ap; se = math.sqrt(wr * (1 - wr) / n); rel = ev / ap * 100 if ap else 0
         sig = "SIG" if wr - 1.96 * se > ap else ("+" if wr > ap else "")
-        print(f"  {label:<18} n={n:>4}  win {wr:.1%} (IC {max(0,wr-1.96*se):.1%}-{min(1,wr+1.96*se):.1%})  "
+        print(f"  {label:<22} n={n:>4}  win {wr:.1%} (IC {max(0,wr-1.96*se):.1%}-{min(1,wr+1.96*se):.1%})  "
               f"bid {ap:.1%}  EDGE {ev*100:+.2f}pp  rel {rel:+.1f}% {sig}")
-    rep("TODO", F)
-    print("  — por zona de bid:")
+
+    print("\nBRACKET del edge (la verdad está entre los dos — el maker real está más cerca del techo):")
+    rep("SUELO (conservador)", Fc)
+    rep("TECHO (optimista)",   Fo)
+    print("  — TECHO por zona de bid (donde maker_edge vio +36%/+11% relativo):")
     for lo, hi, lab in [(0, .20, "<20c"), (.20, .40, "20-40c")]:
-        rep(lab, [r for r in F if lo <= float(r["bid"]) < hi])
-    # tasa de llenado y sesgo de selección adversa
-    posted = [r for r in rows if r["status"] in ("filled", "no_fill")]
-    fillrate = len([r for r in rows if r["status"] == "filled"]) / len(posted) if posted else 0
-    print(f"\n  tasa de llenado: {fillrate:.0%}  (posteadas {len(posted)})")
-    print("  VEREDICTO (pre-fijado ≥40 fills, EV>0):")
-    n = len(F); wr = sum(int(r["won"]) for r in F) / n; ap = sum(float(r["bid"]) for r in F) / n
-    if n < 40: print(f"    → {n}/40 fills, sin veredicto")
-    elif wr > ap:
-        se = math.sqrt(wr * (1 - wr) / n)
-        print("    → EDGE MAKER se sostiene tras selección adversa" +
-              (" (SIGNIFICATIVO)" if wr - 1.96 * se > ap else " (positivo, no significativo aún)"))
+        rep(f"  techo {lab}", [r for r in Fo if lo <= float(r["bid"]) < hi])
+
+    print("\nVEREDICTO (bracket; umbral 40 sobre el TECHO, que es el que llena):")
+    eo, ec = _ev(Fo), _ev(Fc)
+    if len(Fo) < 40:
+        print(f"  → {len(Fo)}/40 fills-techo, sin veredicto")
+    elif eo <= 0:
+        print("  → ni el TECHO (frente de cola) es +EV → el spread no compensa la selección adversa. Muerte.")
+    elif ec is not None and ec > 0 and len(Fc) >= 20:
+        print("  → hasta el SUELO (final de cola) es +EV → edge ROBUSTO a la posición en cola. Muy bueno.")
     else:
-        print("    → ≤break-even: la selección adversa se come el spread. 13ª muerte, documentar.")
+        print("  → TECHO +EV pero SUELO no → el edge EXISTE pero depende de estar al frente de la cola "
+              "(postear temprano/rápido). Desde una Pi lenta, dudoso. Vigilar el suelo.")
 
 def main():
     if "--analyze" in sys.argv: analyze(); return

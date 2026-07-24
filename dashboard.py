@@ -424,42 +424,42 @@ def api_maker2():
     from collections import Counter
     st = Counter(r.get("status", "") for r in rows)
     posted  = [r for r in rows if r.get("status") in ("filled", "no_fill")]
-    filled  = [r for r in rows if r.get("status") == "filled"]
-    F       = [r for r in filled if r.get("won") in ("0", "1")]          # fills resueltos
-    pending = len(filled) - len(F)
-    fillrate = round(len(filled) / len(posted) * 100, 1) if posted else 0.0
-    overall = _m2_stats(F)
-    by_zone = {z: _m2_stats([r for r in F if lo <= float(r["bid"]) < hi])
-               for lo, hi, z in [(0, .20, "<20c"), (.20, .40, "20-40c")]}
-    # SOMBRA: si TODAS las posteadas se hubieran llenado (no_fill incluidas). El hueco entre esta y
-    # la de fills reales = el coste de la SELECCIÓN ADVERSA (te llenan cuando va en tu contra).
-    shadow = _m2_stats([r for r in posted if r.get("won") in ("0", "1")])
+    # BRACKET: SUELO = fill conservador (final de cola); TECHO = fill optimista (frente de cola).
+    Fc = [r for r in rows if r.get("status") == "filled" and r.get("won") in ("0", "1")]
+    Fo = [r for r in rows if r.get("fill_opt") == "yes" and r.get("won") in ("0", "1")]
+    cons = _m2_stats(Fc)
+    opt  = _m2_stats(Fo)
+    fr_cons = round(len([r for r in rows if r.get("status") == "filled"]) / len(posted) * 100, 1) if posted else 0.0
+    fr_opt  = round(len([r for r in rows if r.get("fill_opt") == "yes"]) / len(posted) * 100, 1) if posted else 0.0
+    by_zone = {z: _m2_stats([r for r in Fo if lo <= float(r["bid"]) < hi])
+               for lo, hi, z in [(0, .20, "<20c"), (.20, .40, "20-40c")]}  # techo por zona
 
-    if overall is None or overall["n"] < 40:
-        verdict = ("wait", f"{overall['n'] if overall else 0}/40 fills resueltos — sin veredicto.")
-    elif overall["edge"] > 0:
-        if overall["ci_lo"] > overall["avg_bid"]:
-            verdict = ("real", f"EDGE del spread SOBREVIVE la selección adversa (win {overall['win_rate']}% "
-                       f"> bid {overall['avg_bid']}%, significativo, n={overall['n']}). Primer edge desplegable.")
-        else:
-            verdict = ("maybe", f"Positivo pero no significativo — seguir (win {overall['win_rate']}% vs "
-                       f"bid {overall['avg_bid']}%, EDGE {overall['edge']:+}pp, n={overall['n']}).")
+    # Veredicto por BRACKET (umbral 40 sobre el techo, que es el que llena):
+    if opt is None or opt["n"] < 40:
+        verdict = ("wait", f"{opt['n'] if opt else 0}/40 fills-techo — sin veredicto.")
+    elif opt["edge"] <= 0:
+        verdict = ("dead", f"Ni el TECHO (frente de cola) es +EV (EDGE {opt['edge']:+}pp): el spread no "
+                   f"compensa la selección adversa. Muerte.")
+    elif cons is not None and cons["edge"] > 0 and cons["n"] >= 20:
+        verdict = ("real", f"Hasta el SUELO (final de cola) es +EV (suelo {cons['edge']:+}pp / techo "
+                   f"{opt['edge']:+}pp): edge ROBUSTO a la posición en cola. Muy bueno.")
     else:
-        verdict = ("dead", f"≤ break-even (EDGE {overall['edge']:+}pp): la selección adversa se come el "
-                   f"spread. 13ª muerte, documentar.")
+        verdict = ("maybe", f"TECHO +EV ({opt['edge']:+}pp) pero SUELO no ({cons['edge'] if cons else 0:+}pp): "
+                   f"el edge existe pero depende de estar al FRENTE de la cola (postear rápido). Desde Pi, dudoso.")
 
     def trade(r):
         return {"ws": int(r["ws"]), "slug": r.get("slug"), "cheap": r.get("cheap"),
                 "best_bid": r.get("best_bid"), "best_ask": r.get("best_ask"), "bid": r.get("bid"),
                 "queue": r.get("queue_ahead"), "vol": r.get("vol_hit"),
-                "status": r.get("status"), "winner": r.get("winner"), "won": r.get("won")}
+                "fill_opt": r.get("fill_opt"), "status": r.get("status"),
+                "winner": r.get("winner"), "won": r.get("won")}
     shown = [r for r in rows if r.get("status") in ("filled", "no_fill", "skip_price")][-80:][::-1]
 
     return jsonify({
         "summary": {"n": len(rows), "status": dict(st), "posted": len(posted),
-                    "filled": len(filled), "resolved": len(F), "pending": pending,
-                    "fillrate": fillrate, "overall": overall, "by_zone": by_zone,
-                    "shadow": shadow, "verdict": {"kind": verdict[0], "text": verdict[1]}},
+                    "cons": cons, "opt": opt, "fr_cons": fr_cons, "fr_opt": fr_opt,
+                    "resolved_cons": len(Fc), "resolved_opt": len(Fo), "by_zone": by_zone,
+                    "verdict": {"kind": verdict[0], "text": verdict[1]}},
         "trades": [trade(r) for r in shown],
     })
 

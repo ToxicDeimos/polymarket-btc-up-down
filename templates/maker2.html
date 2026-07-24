@@ -48,28 +48,28 @@
 <div class="grid">
   <div class="card"><h2>Ventanas</h2><div class="val" id="k-n">—</div><div class="sub" id="k-st">—</div></div>
   <div class="card"><h2>Posteadas</h2><div class="val blue" id="k-post">—</div><div class="sub">bid en 3-40¢</div></div>
-  <div class="card"><h2>Tasa de llenado</h2><div class="val" id="k-fr">—</div><div class="sub">fills / posteadas · cola conservadora</div></div>
-  <div class="card"><h2>Fills resueltos</h2><div class="val" id="k-res">—</div><div class="sub" id="k-pend">—</div></div>
-  <div class="card"><h2>WIN</h2><div class="val" id="k-wr">—</div><div class="sub" id="k-ci">vs bid (break-even)</div></div>
-  <div class="card"><h2>EDGE / fill</h2><div class="val" id="k-edge">—</div><div class="sub" id="k-rel">win − bid</div></div>
-  <div class="card"><h2>Progreso veredicto</h2><div class="val" id="k-prog">—</div><div class="sub">≥40 fills, EDGE&gt;0</div></div>
-  <div class="card"><h2>Coste selección adversa</h2><div class="val" id="k-adv">—</div><div class="sub" id="k-adv-sub">sombra − real</div></div>
+  <div class="card"><h2>Tasa llenado — TECHO</h2><div class="val" id="k-fro">—</div><div class="sub" id="k-frc">frente de cola · conservador —</div></div>
+  <div class="card" style="border-color:#1f6f3a"><h2>TECHO · EDGE (frente cola)</h2><div class="val" id="k-opt">—</div><div class="sub" id="k-opt-sub">optimista · win−bid</div></div>
+  <div class="card" style="border-color:#6f2530"><h2>SUELO · EDGE (final cola)</h2><div class="val" id="k-cons">—</div><div class="sub" id="k-cons-sub">conservador · win−bid</div></div>
+  <div class="card"><h2>Progreso veredicto</h2><div class="val" id="k-prog">—</div><div class="sub">≥40 fills-techo</div></div>
 </div>
 
 <div class="verdict wait" id="verdict">—</div>
 
 <div class="section">
   <div class="card">
-    <h2>EDGE por zona de bid (fills reales)</h2>
+    <h2>BRACKET del edge — suelo (final de cola) vs techo (frente de cola)</h2>
     <table>
       <thead><tr><th></th><th>fills</th><th>WIN</th><th>bid medio</th><th>EDGE</th><th>retorno rel.</th></tr></thead>
       <tbody id="zones-body"></tbody>
     </table>
     <div class="sub" style="margin-top:8px">
-      <b>EDGE</b> = win − bid (EV por share). <b>retorno rel.</b> = EDGE/bid (lo que rinde el capital arriesgado).
-      La <b>sombra</b> es el EV si TODAS las posteadas se hubieran llenado; el hueco con los fills reales
-      es el <b>coste de la selección adversa</b> — te llenan cuando el mercado va en tu contra.
-      Referencia poblacional (maker_edge): &lt;20¢ +36% rel · 20-40¢ +11%. Muerte pre-fijada: ≥40 fills, EDGE&gt;0.
+      La verdad está ENTRE los dos. <b>SUELO</b> (conservador) = te llenas solo cuando el volumen vendido
+      supera toda la cola que había delante → solo en desplomes → máxima selección adversa. <b>TECHO</b>
+      (optimista) = te llenas al primer print a tu precio (frente de cola) → menos adversa. El maker real
+      (que en la población gana +3pp) se llena estando al frente, así que está más cerca del techo.
+      Referencia poblacional (maker_edge): &lt;20¢ +36% rel · 20-40¢ +11%. Veredicto: ≥40 fills-techo, y se
+      decide por el bracket (ni el techo +EV → muerto; hasta el suelo +EV → robusto).
     </div>
   </div>
 </div>
@@ -99,6 +99,12 @@ function stat(st){
          `<td class="muted">${st.avg_bid}%</td><td class="${eC}">${st.edge>=0?'+':''}${st.edge}pp</td>`+
          `<td class="${eC}">${st.rel>=0?'+':''}${st.rel}%</td>`;
 }
+function kEdge(el,sub,st,label){
+  if(!st){$(el).textContent='—';$(el).className='val';$(sub).textContent='sin fills';return;}
+  $(el).textContent=`${st.edge>=0?'+':''}${st.edge}pp`;
+  $(el).className=`val ${st.edge>=0?'green':'red'}`;
+  $(sub).textContent=`${label} · n=${st.n} · win ${st.win_rate}% vs bid ${st.avg_bid}% · rel ${st.rel>=0?'+':''}${st.rel}%`;
+}
 async function refresh(){
   try{
     const d=await fetch('/api/maker2').then(r=>r.json()); const s=d.summary;
@@ -108,31 +114,18 @@ async function refresh(){
     const st=s.status||{};
     $('k-st').textContent=`skip ${st.skip_price||0} · no_fill ${st.no_fill||0}`;
     $('k-post').textContent=s.posted;
-    $('k-fr').textContent=`${s.fillrate}%`;
-    $('k-fr').className=`val ${s.fillrate>0?'blue':'muted'}`;
-    $('k-res').textContent=s.resolved;
-    $('k-pend').textContent=s.pending?`${s.pending} pendientes`:'todos resueltos';
-    const o=s.overall;
-    if(o){
-      $('k-wr').textContent=`${o.win_rate}%`; $('k-wr').className=`val ${o.win_rate>o.avg_bid?'green':'red'}`;
-      $('k-ci').textContent=`IC ${o.ci_lo}-${o.ci_hi}% · bid ${o.avg_bid}%`;
-      $('k-edge').textContent=`${o.edge>=0?'+':''}${o.edge}pp`; $('k-edge').className=`val ${o.edge>=0?'green':'red'}`;
-      $('k-rel').textContent=`retorno rel. ${o.rel>=0?'+':''}${o.rel}%`;
-      $('k-prog').textContent=`${Math.min(o.n,40)}/40`;
-    } else {$('k-wr').textContent='—';$('k-edge').textContent='—';$('k-prog').textContent='0/40';}
-    // coste de selección adversa = EDGE sombra − EDGE real
-    if(s.shadow&&o){
-      const adv=(s.shadow.edge-o.edge);
-      $('k-adv').textContent=`${adv>=0?'−':'+'}${Math.abs(adv).toFixed(2)}pp`;
-      $('k-adv').className='val '+(adv>0.01?'red':'green');
-      $('k-adv-sub').textContent=`sombra ${s.shadow.edge>=0?'+':''}${s.shadow.edge} → real ${o.edge>=0?'+':''}${o.edge}`;
-    } else {$('k-adv').textContent='—';$('k-adv-sub').textContent='sin fills';}
+    $('k-fro').textContent=`${s.fr_opt}%`;
+    $('k-fro').className=`val ${s.fr_opt>0?'green':'muted'}`;
+    $('k-frc').textContent=`frente de cola · conservador ${s.fr_cons}%`;
+    kEdge('k-opt','k-opt-sub',s.opt,'optimista (frente)');
+    kEdge('k-cons','k-cons-sub',s.cons,'conservador (final)');
+    $('k-prog').textContent=`${Math.min(s.opt?s.opt.n:0,40)}/40`;
     $('verdict').className=`verdict ${s.verdict.kind}`; $('verdict').textContent=s.verdict.text;
 
-    let zr=`<tr><td><b>TODO</b></td>${stat(o)}</tr>`;
+    let zr=`<tr><td><b>SUELO (final cola)</b></td>${stat(s.cons)}</tr>`+
+           `<tr><td><b>TECHO (frente cola)</b></td>${stat(s.opt)}</tr>`;
     const bz=s.by_zone||{};
-    for(const z of ['<20c','20-40c']) zr+=`<tr><td>${z}</td>${stat(bz[z])}</tr>`;
-    if(s.shadow) zr+=`<tr><td class="muted">sombra (si todo llenara)</td>${stat(s.shadow)}</tr>`;
+    for(const z of ['<20c','20-40c']) zr+=`<tr><td class="muted">techo ${z}</td>${stat(bz[z])}</tr>`;
     $('zones-body').innerHTML=zr;
 
     const tb=$('trades-body');
@@ -140,8 +133,12 @@ async function refresh(){
     else{
       $('trades-empty').style.display='none';
       tb.innerHTML=d.trades.map(t=>{
-        const stC=t.status==='filled'?'fill':(t.status==='no_fill'?'nofill':'skip');
-        const stL=t.status==='filled'?'FILL':(t.status==='no_fill'?'no_fill':'skip');
+        // estado con los DOS modelos: FILL✓✓ (ambos), techo✓ (solo optimista), no_fill, skip
+        let stC,stL;
+        if(t.status==='skip_price'){stC='skip';stL='skip';}
+        else if(t.status==='filled'){stC='fill';stL='cons+opt';}
+        else if(t.fill_opt==='yes'){stC='nofill';stL='solo techo';}
+        else{stC='nofill';stL='no_fill';}
         let wc='pend',wl='pend.';
         if(t.won==='1'){wc='win';wl='sí';} else if(t.won==='0'){wc='lose';wl='no';}
         const side=t.cheap==='Up'?'up':'down';
