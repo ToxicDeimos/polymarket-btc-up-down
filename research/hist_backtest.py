@@ -199,10 +199,12 @@ def main():
         if o is None or e is None or c is None or not o: continue
         move_bps = (e - o) / o * 10000
         if move_bps == 0: continue
+        e180 = cache.get(ws + 180)                   # ACELERACIÓN: ¿los últimos 60s (ws+180→240) van
+        acc = None if e180 is None else (1 if ((e - e180) > 0) == (move_bps > 0) else 0)  # con el líder?
         winner = "Up" if c >= o else "Down"          # regla Polymarket: empate → Up
         leader = "Up" if move_bps > 0 else "Down"
         W.append({"ws": ws, "o": o, "bps": move_bps, "abps": abs(move_bps),
-                  "won": 1 if leader == winner else 0, "ret": (c - o) / o,
+                  "won": 1 if leader == winner else 0, "ret": (c - o) / o, "acc": acc,
                   "ask_est": ask_for(abs(move_bps), amap)})
     if len(W) < 1000:
         print(f"solo {len(W)} ventanas reconstruidas — ¿descarga incompleta?"); return
@@ -251,6 +253,31 @@ def main():
     quintiles(Bd, "ac",  "por AUTOCORRELACIÓN trailing 24h:")
     quintiles(Bd, "er",  "por EFFICIENCY RATIO trailing 24h (alto = tendencia limpia):")
     quintiles(Bd, "vol", "por VOLATILIDAD trailing 24h (bps):")
+
+    # ── 3b) ACELERACIÓN — el filtro del momentum_paper, ahora a escala ──────────────────────────
+    Ba = [w for w in B if w.get("acc") is not None]
+    print("\n" + "=" * 78)
+    print("3b) ACELERACIÓN dentro de la banda — ¿el líder que ACELERA a 240s acierta más?")
+    print("=" * 78)
+    print("   accel = el move de los últimos 60s (ws+180→ws+240) va en la dirección del líder.")
+    print("   (el bot usa 30s; con velas 1m el proxy limpio es 60s — mismo concepto: ¿el move sigue vivo?)")
+    line("A acelera", [w for w in Ba if w["acc"] == 1])
+    line("A frena",   [w for w in Ba if w["acc"] == 0])
+    if len(Ba) > 200:
+        def _hit(seg): return (sum(x["won"] for x in seg) / len(seg)) if seg else 0.0
+        def _gap(seg):
+            a = [w for w in seg if w["acc"] == 1]; f = [w for w in seg if w["acc"] == 0]
+            return (_hit(a) - _hit(f)) * 100 if a and f else 0.0
+        cutA = Ba[int(len(Ba) * 0.6)]["ws"]
+        trA = [w for w in Ba if w["ws"] < cutA]; teA = [w for w in Ba if w["ws"] >= cutA]
+        print(f"\n   gap acelera−frena:   TRAIN {_gap(trA):+.2f}pp   TEST {_gap(teA):+.2f}pp   "
+              f"→ {'GENERALIZA ✓' if (_gap(trA) > 1 and _gap(teA) > 1) else 'no generaliza / plano'}")
+        print("   — en TEST, ¿'acelera' bate al ASK? (lo que decide si hay EDGE, no solo diferencia):")
+        line("  TEST acelera", [w for w in teA if w["acc"] == 1])
+        line("  TEST frena",   [w for w in teA if w["acc"] == 0])
+        print("   OJO: el ask_est solo depende del MOVE, no de la aceleración. Si el mercado cobra MÁS")
+        print("   por los moves que aceleran (probable), 'bate al ask medio' NO basta — habría que ver el")
+        print("   ask real de las que aceleran (eso está en el log del bot). Aquí se decide la SEÑAL, no el precio.")
 
     print("\n" + "=" * 78)
     print("4) TRAIN / TEST temporal (60/40) — ¿el régimen generaliza o es sobreajuste?")
