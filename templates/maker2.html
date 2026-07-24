@@ -47,29 +47,30 @@
 
 <div class="grid">
   <div class="card"><h2>Ventanas</h2><div class="val" id="k-n">—</div><div class="sub" id="k-st">—</div></div>
-  <div class="card"><h2>Posteadas</h2><div class="val blue" id="k-post">—</div><div class="sub">bid en 3-40¢</div></div>
-  <div class="card"><h2>Tasa llenado — TECHO</h2><div class="val" id="k-fro">—</div><div class="sub" id="k-frc">frente de cola · conservador —</div></div>
-  <div class="card" style="border-color:#1f6f3a"><h2>TECHO · EDGE (frente cola)</h2><div class="val" id="k-opt">—</div><div class="sub" id="k-opt-sub">optimista · win−bid</div></div>
+  <div class="card"><h2>Posteadas / canceladas</h2><div class="val blue" id="k-post">—</div><div class="sub" id="k-canc">bid en 3-40¢</div></div>
+  <div class="card" style="border-color:#1f6f3a"><h2>★ TECHO+CANCEL · EDGE (objetivo)</h2><div class="val" id="k-opc">—</div><div class="sub" id="k-opc-sub">frente cola + cancel 3bps · win−bid</div></div>
+  <div class="card"><h2>Tasa llenado (t.+cancel)</h2><div class="val" id="k-froc">—</div><div class="sub" id="k-frs">techo — · conservador —</div></div>
+  <div class="card"><h2>TECHO · EDGE (sin cancel)</h2><div class="val" id="k-opt">—</div><div class="sub" id="k-opt-sub">frente cola · win−bid</div></div>
   <div class="card" style="border-color:#6f2530"><h2>SUELO · EDGE (final cola)</h2><div class="val" id="k-cons">—</div><div class="sub" id="k-cons-sub">conservador · win−bid</div></div>
-  <div class="card"><h2>Progreso veredicto</h2><div class="val" id="k-prog">—</div><div class="sub">≥40 fills-techo</div></div>
+  <div class="card"><h2>Progreso veredicto</h2><div class="val" id="k-prog">—</div><div class="sub">≥40 fills (techo+cancel)</div></div>
 </div>
 
 <div class="verdict wait" id="verdict">—</div>
 
 <div class="section">
   <div class="card">
-    <h2>BRACKET del edge — suelo (final de cola) vs techo (frente de cola)</h2>
+    <h2>BRACKET × cancelación — objetivo = frente de cola + cancelar a 3bps</h2>
     <table>
       <thead><tr><th></th><th>fills</th><th>WIN</th><th>bid medio</th><th>EDGE</th><th>retorno rel.</th></tr></thead>
       <tbody id="zones-body"></tbody>
     </table>
     <div class="sub" style="margin-top:8px">
-      La verdad está ENTRE los dos. <b>SUELO</b> (conservador) = te llenas solo cuando el volumen vendido
-      supera toda la cola que había delante → solo en desplomes → máxima selección adversa. <b>TECHO</b>
-      (optimista) = te llenas al primer print a tu precio (frente de cola) → menos adversa. El maker real
-      (que en la población gana +3pp) se llena estando al frente, así que está más cerca del techo.
-      Referencia poblacional (maker_edge): &lt;20¢ +36% rel · 20-40¢ +11%. Veredicto: ≥40 fills-techo, y se
-      decide por el bracket (ni el techo +EV → muerto; hasta el suelo +EV → robusto).
+      <b>★ TECHO+CANCEL</b> es la estrategia real del maker profesional: frente de cola (postear rápido) +
+      retirar el bid si BTC se mueve ≥3bps en contra. El umbral 3bps sale de <b>maker_adverse.py</b> sobre
+      12.305 fills reales: el cubo "&gt;2bps en contra" (41% de fills, los pick-offs) es el único −EV;
+      cancelarlo sube el edge de +4.31 a +8.20pp reteniendo el 68% del volumen. <b>SUELO</b> (final de cola)
+      solo se llena en desplomes = peor caso; <b>TECHO</b> sin cancel = frente de cola pero comiéndose los
+      pick-offs. Veredicto: ≥40 fills (techo+cancel), +EV y significativo → primer edge desplegable.
     </div>
   </div>
 </div>
@@ -114,18 +115,21 @@ async function refresh(){
     const st=s.status||{};
     $('k-st').textContent=`skip ${st.skip_price||0} · no_fill ${st.no_fill||0}`;
     $('k-post').textContent=s.posted;
-    $('k-fro').textContent=`${s.fr_opt}%`;
-    $('k-fro').className=`val ${s.fr_opt>0?'green':'muted'}`;
-    $('k-frc').textContent=`frente de cola · conservador ${s.fr_cons}%`;
-    kEdge('k-opt','k-opt-sub',s.opt,'optimista (frente)');
+    $('k-canc').textContent=`${s.ncancel||0} canceladas · bid 3-40¢`;
+    kEdge('k-opc','k-opc-sub',s.opc,'objetivo (frente+cancel)');
+    $('k-froc').textContent=`${s.fr_opc}%`;
+    $('k-froc').className=`val ${s.fr_opc>0?'green':'muted'}`;
+    $('k-frs').textContent=`techo ${s.fr_opt}% · conservador ${s.fr_cons}%`;
+    kEdge('k-opt','k-opt-sub',s.opt,'frente cola (sin cancel)');
     kEdge('k-cons','k-cons-sub',s.cons,'conservador (final)');
-    $('k-prog').textContent=`${Math.min(s.opt?s.opt.n:0,40)}/40`;
+    $('k-prog').textContent=`${Math.min(s.opc?s.opc.n:0,40)}/40`;
     $('verdict').className=`verdict ${s.verdict.kind}`; $('verdict').textContent=s.verdict.text;
 
-    let zr=`<tr><td><b>SUELO (final cola)</b></td>${stat(s.cons)}</tr>`+
-           `<tr><td><b>TECHO (frente cola)</b></td>${stat(s.opt)}</tr>`;
+    let zr=`<tr><td><b>★ TECHO+CANCEL (objetivo)</b></td>${stat(s.opc)}</tr>`+
+           `<tr><td class="muted">TECHO sin cancel</td>${stat(s.opt)}</tr>`+
+           `<tr><td class="muted">SUELO (final cola)</td>${stat(s.cons)}</tr>`;
     const bz=s.by_zone||{};
-    for(const z of ['<20c','20-40c']) zr+=`<tr><td class="muted">techo ${z}</td>${stat(bz[z])}</tr>`;
+    for(const z of ['<20c','20-40c']) zr+=`<tr><td class="muted">objetivo ${z}</td>${stat(bz[z])}</tr>`;
     $('zones-body').innerHTML=zr;
 
     const tb=$('trades-body');
@@ -133,12 +137,13 @@ async function refresh(){
     else{
       $('trades-empty').style.display='none';
       tb.innerHTML=d.trades.map(t=>{
-        // estado con los DOS modelos: FILL✓✓ (ambos), techo✓ (solo optimista), no_fill, skip
+        // estado: skip / no_fill / solo techo / cons+opt, con marca CANCEL si BTC se giró
         let stC,stL;
         if(t.status==='skip_price'){stC='skip';stL='skip';}
         else if(t.status==='filled'){stC='fill';stL='cons+opt';}
         else if(t.fill_opt==='yes'){stC='nofill';stL='solo techo';}
         else{stC='nofill';stL='no_fill';}
+        if(t.cancelled==='yes'){stL+=' ⊘cancel';}
         let wc='pend',wl='pend.';
         if(t.won==='1'){wc='win';wl='sí';} else if(t.won==='0'){wc='lose';wl='no';}
         const side=t.cheap==='Up'?'up':'down';

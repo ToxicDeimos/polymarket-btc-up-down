@@ -28,18 +28,26 @@ Autónomo (stdlib). Log gitignored.
 """
 import urllib.request, json, time, csv, os, sys, math, bisect
 
-ENTRY     = 195        # s dentro de la ventana 5m (mediana de entrada de los makers ganadores)
-BID_MIN   = 0.03       # no postear por debajo (ruido/resolución)
-BID_MAX   = 0.40       # zona BARATA: donde el retorno relativo del spread es grande
-POLL      = 3          # s entre sondeos del libro/cinta mientras la orden está viva
+ENTRY      = 195       # s dentro de la ventana 5m (mediana de entrada de los makers ganadores)
+BID_MIN    = 0.03      # no postear por debajo (ruido/resolución)
+BID_MAX    = 0.40      # zona BARATA: donde el retorno relativo del spread es grande
+POLL       = 3         # s entre sondeos del libro/cinta/spot mientras la orden está viva
+CANCEL_BPS = 3.0       # gestión de SELECCIÓN ADVERSA: retirar el bid si BTC (spot Binance) se mueve
+                       # >=3bps EN CONTRA del lado comprado desde que posteamos. Umbral ÓPTIMO medido
+                       # sobre 12.305 fills maker reales (maker_adverse.py): el cubo ">2bps en contra"
+                       # es el único −EV (−0.64pp); cancelar a 3bps sube el edge de +4.31 a +8.20pp
+                       # reteniendo el 68% de los fills. Es el ingrediente del maker profesional.
 LOG = os.path.join(os.path.dirname(__file__), "maker2_paper_log.csv")
-# fill_opt (nuevo) = llenado OPTIMISTA (frente de cola: te llenan al primer print a tu precio).
-# status "filled" = llenado CONSERVADOR (final de cola: solo cuando el volumen vendido supera la cola
-# que había delante). El par acota la verdad: suelo (conservador) vs techo (optimista).
+# BRACKET de llenado × CANCELACIÓN. fill_opt = frente de cola (primer print). status filled = final de
+# cola (vol vendido > cola). cancelled/vol_precancel = con gestión adversa (fills ANTES de cancelar).
 HEADER = ["ws","slug","cheap","best_bid","best_ask","bid","queue_ahead","vol_hit","fill_opt",
-          "status","fill_price","winner","won","cid"]
-OLD_HEADER = ["ws","slug","cheap","best_bid","best_ask","bid","queue_ahead","vol_hit",
-              "status","fill_price","winner","won","cid"]
+          "status","fill_price","winner","won","cid","cancelled","vol_precancel"]
+OLD_HEADERS = [
+    ["ws","slug","cheap","best_bid","best_ask","bid","queue_ahead","vol_hit",
+     "status","fill_price","winner","won","cid"],                                   # v0 (13)
+    ["ws","slug","cheap","best_bid","best_ask","bid","queue_ahead","vol_hit","fill_opt",
+     "status","fill_price","winner","won","cid"],                                   # v1 (14, +fill_opt)
+]
 
 def get(url, tries=2):
     for i in range(tries):
@@ -53,24 +61,33 @@ def get(url, tries=2):
 def now(): return int(time.time())
 
 def ensure_log():
-    """Migra el log a HEADER actual. fill_opt de filas viejas se DERIVA del vol_hit ya logueado
-    (si hubo cualquier venta a nuestro precio, el frente de cola se habría llenado)."""
+    """Migra el log a HEADER actual (cadena v0/v1 → nuevo). Deriva columnas nuevas de lo ya logueado:
+    fill_opt del vol_hit (si hubo venta a nuestro precio, el frente de cola se habría llenado);
+    vol_precancel = vol_hit (filas viejas no monitoreaban cancel → equivalen a 'sin cancelar')."""
     if not os.path.exists(LOG): return
     with open(LOG, encoding="utf-8") as f: first = f.readline().strip()
     if first == ",".join(HEADER): return
-    if first.split(",") == OLD_HEADER:
+    if first.split(",") in OLD_HEADERS:
         rows = list(csv.DictReader(open(LOG, encoding="utf-8")))
         for r in rows:
             st = r.get("status")
             try: v = float(r.get("vol_hit") or 0)
             except Exception: v = 0.0
-            r["fill_opt"] = "yes" if (st == "filled" or v > 0) else ("no" if st == "no_fill" else "")
+            if "fill_opt" not in r or r.get("fill_opt") in (None, ""):
+                r["fill_opt"] = "yes" if (st == "filled" or v > 0) else ("no" if st == "no_fill" else "")
+            r["cancelled"] = ""                       # desconocido en filas viejas
+            r["vol_precancel"] = r.get("vol_hit", "")  # sin cancel ⇒ igual que vol_hit
         with open(LOG, "w", newline="", encoding="utf-8") as f:
             w = csv.DictWriter(f, fieldnames=HEADER); w.writeheader()
             for r in rows: w.writerow({k: r.get(k, "") for k in HEADER})
-        print(f"log migrado (+fill_opt), {len(rows)} filas conservadas")
+        print(f"log migrado a v2 (+cancelled/vol_precancel), {len(rows)} filas conservadas")
     else:
         print("(!) cabecera de log inesperada — revisar antes de continuar")
+
+def binance_spot():
+    d = get("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT")
+    try: return float(d["price"]) if d else None
+    except Exception: return None
 
 def log(row):
     new = not os.path.exists(LOG)
@@ -147,14 +164,15 @@ def run_window(win):
         log([ws, slug, cheap, bb, ba, bid, "", "", "", "skip_price", "", "", "", cid]);
         print(f"   skip: bid {bid} fuera de [{BID_MIN},{BID_MAX}]"); return
     queue = round(bsz, 1)                               # profundidad DELANTE de nosotros en la cola
-    tok = toks[cheap]
-    print(f"   POST bid {bid} en {cheap}  (ask {ba}, cola delante {queue})")
+    sp0 = binance_spot()                                # spot de referencia para la cancelación
+    print(f"   POST bid {bid} en {cheap}  (ask {ba}, cola delante {queue}, spot {sp0})")
 
-    # ── DOS modelos de cola sobre la MISMA orden (bracket suelo/techo) ──────────────────────────
-    #   fill_opt (techo) = frente de cola: te llenas al primer print vendido a tu precio.
-    #   status filled (suelo) = final de cola: solo cuando el volumen vendido supera la cola de delante.
-    #   NO se rompe el bucle: se vigila toda la ventana para capturar ambos.
+    # ── bracket de cola (suelo/techo) × GESTIÓN ADVERSA (cancelar si BTC se gira) ────────────────
+    #   fill_opt (techo)=frente de cola; status filled (suelo)=final de cola. NO se rompe el bucle.
+    #   cancelled=yes cuando BTC va >=CANCEL_BPS en contra de 'cheap': se congela vol_precancel = los
+    #   fills que YA teníamos antes de cancelar (los posteriores no cuentan en la versión con-cancel).
     seen = set(); vol_hit = 0.0; fill_opt = "no"; status = "no_fill"; last = ws + ENTRY
+    cancelled = "no"; vol_precancel = 0.0
     while now() < ws + 300:
         feed = get(f"https://data-api.polymarket.com/trades?market={cid}&limit=100") or []
         for t in feed:
@@ -170,7 +188,17 @@ def run_window(win):
             fill_opt = "yes"; print(f"   fill OPTIMISTA @ {bid} (primer print vendido)")
         if vol_hit > queue and status != "filled":
             status = "filled"; print(f"   fill CONSERVADOR @ {bid} (vol {vol_hit:.1f} > cola {queue})")
+        # CANCELACIÓN: ¿BTC se movió >=CANCEL_BPS en contra del lado comprado desde que posteamos?
+        if cancelled == "no" and sp0:
+            sp = binance_spot()
+            if sp:
+                adv = (sp - sp0) / sp0 * 10000
+                against = (-adv if cheap == "Up" else adv)    # >0 = BTC en contra de 'cheap'
+                if against >= CANCEL_BPS:
+                    cancelled = "yes"; vol_precancel = vol_hit
+                    print(f"   CANCEL bid ({cheap}: BTC {against:.1f}bps en contra) — fills previos {vol_hit:.1f}")
         time.sleep(POLL)
+    if cancelled == "no": vol_precancel = vol_hit          # nunca cancelado ⇒ con-cancel = sin-cancel
 
     # ── resolución por CLOB (Chainlink) ──
     while now() < ws + 300 + 5: time.sleep(3)
@@ -180,8 +208,9 @@ def run_window(win):
         if win_side is None: time.sleep(15)
     won = "" if win_side is None else (1 if win_side == cheap else 0)
     log([ws, slug, cheap, bb, ba, bid, queue, round(vol_hit, 1), fill_opt,
-         status, bid if status == "filled" else "", win_side or "", won, cid])
-    print(f"   -> cons={status} opt={fill_opt} | winner {win_side or 'PEND'} | won {won}")
+         status, bid if status == "filled" else "", win_side or "", won, cid,
+         cancelled, round(vol_precancel, 1)])
+    print(f"   -> cons={status} opt={fill_opt} cancel={cancelled} | winner {win_side or 'PEND'} | won {won}")
 
 def _ev(rs):
     if not rs: return None
@@ -193,42 +222,54 @@ def analyze():
     ensure_log(); backfill_pending()
     rows = list(csv.DictReader(open(LOG, encoding="utf-8")))
     from collections import Counter
+    def _vpc(r):
+        try: return float(r.get("vol_precancel") or 0)
+        except Exception: return 0.0
     posted = [r for r in rows if r.get("status") in ("filled", "no_fill")]
-    Fc = [r for r in rows if r.get("status") == "filled" and r.get("won") in ("0", "1")]   # SUELO
-    Fo = [r for r in rows if r.get("fill_opt") == "yes" and r.get("won") in ("0", "1")]     # TECHO
+    Fc  = [r for r in rows if r.get("status") == "filled" and r.get("won") in ("0", "1")]  # SUELO
+    Fo  = [r for r in rows if r.get("fill_opt") == "yes" and r.get("won") in ("0", "1")]    # TECHO
+    Foc = [r for r in rows if _vpc(r) > 0 and r.get("won") in ("0", "1")]                   # TECHO+CANCEL
     print(f"ventanas: {len(rows)}  ·  {dict(Counter(r['status'] for r in rows))}")
-    frc = len([r for r in rows if r.get('status') == 'filled']) / len(posted) if posted else 0
-    fro = len([r for r in rows if r.get('fill_opt') == 'yes']) / len(posted) if posted else 0
-    print(f"posteadas: {len(posted)}  ·  tasa de llenado — CONSERVADOR {frc:.0%} (final de cola) / "
-          f"OPTIMISTA {fro:.0%} (frente de cola)")
+    def _fr(cond): return len([r for r in rows if cond(r)]) / len(posted) if posted else 0
+    frc = _fr(lambda r: r.get('status') == 'filled')
+    fro = _fr(lambda r: r.get('fill_opt') == 'yes')
+    froc = _fr(lambda r: _vpc(r) > 0)
+    ncancel = len([r for r in rows if r.get("cancelled") == "yes"])
+    print(f"posteadas: {len(posted)}  ·  canceladas: {ncancel}  ·  tasa llenado — "
+          f"CONSERVADOR {frc:.0%} / OPTIMISTA {fro:.0%} / OPTIMISTA+CANCEL {froc:.0%}")
 
     def rep(label, rs):
         n = len(rs)
-        if not n: print(f"  {label:<22} sin fills"); return
+        if not n: print(f"  {label:<24} sin fills"); return
         wr = sum(int(r["won"]) for r in rs) / n; ap = sum(float(r["bid"]) for r in rs) / n
         ev = wr - ap; se = math.sqrt(wr * (1 - wr) / n); rel = ev / ap * 100 if ap else 0
         sig = "SIG" if wr - 1.96 * se > ap else ("+" if wr > ap else "")
-        print(f"  {label:<22} n={n:>4}  win {wr:.1%} (IC {max(0,wr-1.96*se):.1%}-{min(1,wr+1.96*se):.1%})  "
+        print(f"  {label:<24} n={n:>4}  win {wr:.1%} (IC {max(0,wr-1.96*se):.1%}-{min(1,wr+1.96*se):.1%})  "
               f"bid {ap:.1%}  EDGE {ev*100:+.2f}pp  rel {rel:+.1f}% {sig}")
 
-    print("\nBRACKET del edge (la verdad está entre los dos — el maker real está más cerca del techo):")
-    rep("SUELO (conservador)", Fc)
-    rep("TECHO (optimista)",   Fo)
-    print("  — TECHO por zona de bid (donde maker_edge vio +36%/+11% relativo):")
+    print("\nBRACKET × GESTIÓN ADVERSA (el bot objetivo = TECHO+CANCEL: frente de cola + cancelar a 3bps):")
+    rep("SUELO (final cola)",     Fc)
+    rep("TECHO (frente cola)",    Fo)
+    rep("TECHO+CANCEL (objetivo)", Foc)
+    if Fo and Foc:
+        print(f"  → efecto de cancelar sobre el techo: EDGE {(_ev(Fo) or 0)*100:+.2f} → {(_ev(Foc) or 0)*100:+.2f}pp "
+              f"(referencia lab maker_adverse: +4.31 → +8.20pp)")
+    print("  — TECHO+CANCEL por zona de bid:")
     for lo, hi, lab in [(0, .20, "<20c"), (.20, .40, "20-40c")]:
-        rep(f"  techo {lab}", [r for r in Fo if lo <= float(r["bid"]) < hi])
+        rep(f"  {lab}", [r for r in Foc if lo <= float(r["bid"]) < hi])
 
-    print("\nVEREDICTO (bracket; umbral 40 sobre el TECHO, que es el que llena):")
-    eo, ec = _ev(Fo), _ev(Fc)
-    if len(Fo) < 40:
-        print(f"  → {len(Fo)}/40 fills-techo, sin veredicto")
-    elif eo <= 0:
-        print("  → ni el TECHO (frente de cola) es +EV → el spread no compensa la selección adversa. Muerte.")
-    elif ec is not None and ec > 0 and len(Fc) >= 20:
-        print("  → hasta el SUELO (final de cola) es +EV → edge ROBUSTO a la posición en cola. Muy bueno.")
+    print("\nVEREDICTO (umbral 40 sobre TECHO+CANCEL = la estrategia real):")
+    et = _ev(Foc)
+    if len(Foc) < 40:
+        print(f"  → {len(Foc)}/40 fills(techo+cancel), sin veredicto")
+    elif et <= 0:
+        print("  → ni con cancelación es +EV → el spread no compensa la selección adversa desde una Pi. Muerte.")
     else:
-        print("  → TECHO +EV pero SUELO no → el edge EXISTE pero depende de estar al frente de la cola "
-              "(postear temprano/rápido). Desde una Pi lenta, dudoso. Vigilar el suelo.")
+        n = len(Foc); wr = sum(int(r["won"]) for r in Foc) / n; ap = sum(float(r["bid"]) for r in Foc) / n
+        se = math.sqrt(wr * (1 - wr) / n)
+        print("  → EDGE MAKER +EV con cancelación" +
+              (" (SIGNIFICATIVO) → primer edge desplegable del proyecto." if wr - 1.96 * se > ap
+               else " (positivo, no significativo aún) → seguir."))
 
 def main():
     if "--analyze" in sys.argv: analyze(); return

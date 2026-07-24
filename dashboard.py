@@ -422,43 +422,50 @@ def api_maker2():
     if not rows:
         return jsonify({"summary": {"n": 0}, "trades": []})
     from collections import Counter
+    def _vpc(r):
+        try: return float(r.get("vol_precancel") or 0)
+        except Exception: return 0.0
     st = Counter(r.get("status", "") for r in rows)
     posted  = [r for r in rows if r.get("status") in ("filled", "no_fill")]
-    # BRACKET: SUELO = fill conservador (final de cola); TECHO = fill optimista (frente de cola).
-    Fc = [r for r in rows if r.get("status") == "filled" and r.get("won") in ("0", "1")]
-    Fo = [r for r in rows if r.get("fill_opt") == "yes" and r.get("won") in ("0", "1")]
+    # BRACKET × CANCEL: SUELO = final de cola; TECHO = frente de cola; TECHO+CANCEL = objetivo (cancela a 3bps).
+    Fc  = [r for r in rows if r.get("status") == "filled" and r.get("won") in ("0", "1")]
+    Fo  = [r for r in rows if r.get("fill_opt") == "yes" and r.get("won") in ("0", "1")]
+    Foc = [r for r in rows if _vpc(r) > 0 and r.get("won") in ("0", "1")]
     cons = _m2_stats(Fc)
     opt  = _m2_stats(Fo)
+    opc  = _m2_stats(Foc)
     fr_cons = round(len([r for r in rows if r.get("status") == "filled"]) / len(posted) * 100, 1) if posted else 0.0
     fr_opt  = round(len([r for r in rows if r.get("fill_opt") == "yes"]) / len(posted) * 100, 1) if posted else 0.0
-    by_zone = {z: _m2_stats([r for r in Fo if lo <= float(r["bid"]) < hi])
-               for lo, hi, z in [(0, .20, "<20c"), (.20, .40, "20-40c")]}  # techo por zona
+    fr_opc  = round(len([r for r in rows if _vpc(r) > 0]) / len(posted) * 100, 1) if posted else 0.0
+    ncancel = len([r for r in rows if r.get("cancelled") == "yes"])
+    by_zone = {z: _m2_stats([r for r in Foc if lo <= float(r["bid"]) < hi])
+               for lo, hi, z in [(0, .20, "<20c"), (.20, .40, "20-40c")]}  # techo+cancel por zona
 
-    # Veredicto por BRACKET (umbral 40 sobre el techo, que es el que llena):
-    if opt is None or opt["n"] < 40:
-        verdict = ("wait", f"{opt['n'] if opt else 0}/40 fills-techo — sin veredicto.")
-    elif opt["edge"] <= 0:
-        verdict = ("dead", f"Ni el TECHO (frente de cola) es +EV (EDGE {opt['edge']:+}pp): el spread no "
-                   f"compensa la selección adversa. Muerte.")
-    elif cons is not None and cons["edge"] > 0 and cons["n"] >= 20:
-        verdict = ("real", f"Hasta el SUELO (final de cola) es +EV (suelo {cons['edge']:+}pp / techo "
-                   f"{opt['edge']:+}pp): edge ROBUSTO a la posición en cola. Muy bueno.")
+    # Veredicto sobre TECHO+CANCEL = la estrategia real (umbral 40):
+    if opc is None or opc["n"] < 40:
+        verdict = ("wait", f"{opc['n'] if opc else 0}/40 fills (techo+cancel) — sin veredicto.")
+    elif opc["edge"] <= 0:
+        verdict = ("dead", f"Ni con cancelación es +EV (EDGE {opc['edge']:+}pp): el spread no compensa la "
+                   f"selección adversa desde una Pi. Muerte.")
+    elif opc["ci_lo"] > opc["avg_bid"]:
+        verdict = ("real", f"EDGE MAKER +EV con cancelación, SIGNIFICATIVO (win {opc['win_rate']}% > bid "
+                   f"{opc['avg_bid']}%, n={opc['n']}, EDGE {opc['edge']:+}pp). Primer edge desplegable.")
     else:
-        verdict = ("maybe", f"TECHO +EV ({opt['edge']:+}pp) pero SUELO no ({cons['edge'] if cons else 0:+}pp): "
-                   f"el edge existe pero depende de estar al FRENTE de la cola (postear rápido). Desde Pi, dudoso.")
+        verdict = ("maybe", f"TECHO+CANCEL +EV ({opc['edge']:+}pp) pero no significativo aún "
+                   f"(n={opc['n']}, IC {opc['ci_lo']}-{opc['ci_hi']}%). Seguir.")
 
     def trade(r):
         return {"ws": int(r["ws"]), "slug": r.get("slug"), "cheap": r.get("cheap"),
                 "best_bid": r.get("best_bid"), "best_ask": r.get("best_ask"), "bid": r.get("bid"),
                 "queue": r.get("queue_ahead"), "vol": r.get("vol_hit"),
                 "fill_opt": r.get("fill_opt"), "status": r.get("status"),
-                "winner": r.get("winner"), "won": r.get("won")}
+                "cancelled": r.get("cancelled"), "winner": r.get("winner"), "won": r.get("won")}
     shown = [r for r in rows if r.get("status") in ("filled", "no_fill", "skip_price")][-80:][::-1]
 
     return jsonify({
-        "summary": {"n": len(rows), "status": dict(st), "posted": len(posted),
-                    "cons": cons, "opt": opt, "fr_cons": fr_cons, "fr_opt": fr_opt,
-                    "resolved_cons": len(Fc), "resolved_opt": len(Fo), "by_zone": by_zone,
+        "summary": {"n": len(rows), "status": dict(st), "posted": len(posted), "ncancel": ncancel,
+                    "cons": cons, "opt": opt, "opc": opc,
+                    "fr_cons": fr_cons, "fr_opt": fr_opt, "fr_opc": fr_opc, "by_zone": by_zone,
                     "verdict": {"kind": verdict[0], "text": verdict[1]}},
         "trades": [trade(r) for r in shown],
     })
