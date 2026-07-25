@@ -32,9 +32,12 @@ ENTRY      = 195       # s dentro de la ventana 5m (mediana de entrada de los ma
 BID_MIN    = 0.03      # no postear por debajo (ruido/resolución)
 BID_MAX    = 0.40      # zona BARATA: donde el retorno relativo del spread es grande
 POLL       = 3         # s entre sondeos del libro/cinta/spot mientras la orden está viva
-MIN_VERDICT = 150      # fills (techo+cancel) para veredicto. NO 40: la varianza de opciones baratas
-                       # exige n > 3.84·p(1−p)/edge² ≈ 165 para un edge de +5.45pp a <20¢. A 40 el
-                       # "veredicto" sería sobre ruido (el IC del win se traga el break-even).
+MIN_VERDICT = 40       # v2 PROFUNDO: el edge es mucho mayor (+15.75pp deep vs +1.76 al toque) → confirma
+                       # con menos fills (n > 3.84·p(1−p)/edge² ≈ 30 para +15.75pp). 40 basta.
+POST_OFFSET = 0.02     # v2: postear POR DEBAJO del mejor bid, no al toque. maker_adverse (12.937 fills):
+                       # edge maker crece +1.76pp (al toque) → +7.67pp (2-5¢) → +15.75pp (>5¢ profundo).
+                       # Mecanismo: un bid profundo caza dips TRANSITORIOS que revierten. Trade-off:
+                       # menor tasa de llenado (te llenan menos) = el único incógnito, se mide operándolo.
 CANCEL_BPS = 3.0       # gestión de SELECCIÓN ADVERSA: retirar el bid si BTC (spot Binance) se mueve
                        # >=3bps EN CONTRA del lado comprado desde que posteamos. Umbral ÓPTIMO medido
                        # sobre 12.305 fills maker reales (maker_adverse.py): el cubo ">2bps en contra"
@@ -162,13 +165,13 @@ def run_window(win):
     cheap = "Up" if bu[2] < bd[2] else "Down"          # lado con menor ask = barato
     bb, bsz, ba = (bu if cheap == "Up" else bd)
     if bb is None: return
-    bid = round(bb, 3)                                  # posteamos EN el mejor bid (cobra el spread)
+    bid = round(bb - POST_OFFSET, 3)                    # v2: POR DEBAJO del mejor bid (caza dips que revierten)
     if not (BID_MIN <= bid <= BID_MAX):
         log([ws, slug, cheap, bb, ba, bid, "", "", "", "skip_price", "", "", "", cid]);
-        print(f"   skip: bid {bid} fuera de [{BID_MIN},{BID_MAX}]"); return
-    queue = round(bsz, 1)                               # profundidad DELANTE de nosotros en la cola
+        print(f"   skip: bid {bid} (best {bb}−{POST_OFFSET}) fuera de [{BID_MIN},{BID_MAX}]"); return
+    queue = round(bsz, 1)                               # bids POR ENCIMA (mejor bid) = lo que se vende antes de llegar a nosotros
     sp0 = binance_spot()                                # spot de referencia para la cancelación
-    print(f"   POST bid {bid} en {cheap}  (ask {ba}, cola delante {queue}, spot {sp0})")
+    print(f"   POST bid {bid} en {cheap}  (best_bid {bb}, ask {ba}, cola arriba {queue}, spot {sp0})")
 
     # ── bracket de cola (suelo/techo) × GESTIÓN ADVERSA (cancelar si BTC se gira) ────────────────
     #   fill_opt (techo)=frente de cola; status filled (suelo)=final de cola. NO se rompe el bucle.
@@ -228,16 +231,21 @@ def analyze():
     def _vpc(r):
         try: return float(r.get("vol_precancel") or 0)
         except Exception: return 0.0
-    posted = [r for r in rows if r.get("status") in ("filled", "no_fill")]
-    Fc  = [r for r in rows if r.get("status") == "filled" and r.get("won") in ("0", "1")]  # SUELO
-    Fo  = [r for r in rows if r.get("fill_opt") == "yes" and r.get("won") in ("0", "1")]    # TECHO
-    Foc = [r for r in rows if _vpc(r) > 0 and r.get("won") in ("0", "1")]                   # TECHO+CANCEL
+    def _deep(r):   # v2 = posteado por debajo del mejor bid (best_bid − bid ≥ 1¢). Separa del viejo al-toque.
+        try: return (float(r.get("best_bid") or 0) - float(r.get("bid") or 0)) >= 0.01
+        except Exception: return False
+    posted = [r for r in rows if r.get("status") in ("filled", "no_fill") and _deep(r)]
+    Fc  = [r for r in rows if _deep(r) and r.get("status") == "filled" and r.get("won") in ("0", "1")]  # SUELO
+    Fo  = [r for r in rows if _deep(r) and r.get("fill_opt") == "yes" and r.get("won") in ("0", "1")]    # TECHO
+    Foc = [r for r in rows if _deep(r) and _vpc(r) > 0 and r.get("won") in ("0", "1")]                   # TECHO+CANCEL
+    n_touch = len([r for r in rows if not _deep(r) and r.get("fill_opt") == "yes" and r.get("won") in ("0", "1")])
     print(f"ventanas: {len(rows)}  ·  {dict(Counter(r['status'] for r in rows))}")
-    def _fr(cond): return len([r for r in rows if cond(r)]) / len(posted) if posted else 0
+    print(f"(v2 PROFUNDO: análisis sobre fills posteados <best_bid. Fills al-toque viejos (referencia): {n_touch})")
+    def _fr(cond): return len([r for r in rows if _deep(r) and cond(r)]) / len(posted) if posted else 0
     frc = _fr(lambda r: r.get('status') == 'filled')
     fro = _fr(lambda r: r.get('fill_opt') == 'yes')
     froc = _fr(lambda r: _vpc(r) > 0)
-    ncancel = len([r for r in rows if r.get("cancelled") == "yes"])
+    ncancel = len([r for r in rows if _deep(r) and r.get("cancelled") == "yes"])
     print(f"posteadas: {len(posted)}  ·  canceladas: {ncancel}  ·  tasa llenado — "
           f"CONSERVADOR {frc:.0%} / OPTIMISTA {fro:.0%} / OPTIMISTA+CANCEL {froc:.0%}")
 

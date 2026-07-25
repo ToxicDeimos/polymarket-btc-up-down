@@ -425,25 +425,28 @@ def api_maker2():
     def _vpc(r):
         try: return float(r.get("vol_precancel") or 0)
         except Exception: return 0.0
+    def _deep(r):   # v2 = posteado por debajo del mejor bid (separa del viejo al-toque)
+        try: return (float(r.get("best_bid") or 0) - float(r.get("bid") or 0)) >= 0.01
+        except Exception: return False
     st = Counter(r.get("status", "") for r in rows)
-    posted  = [r for r in rows if r.get("status") in ("filled", "no_fill")]
-    # BRACKET × CANCEL: SUELO = final de cola; TECHO = frente de cola; TECHO+CANCEL = objetivo (cancela a 3bps).
-    Fc  = [r for r in rows if r.get("status") == "filled" and r.get("won") in ("0", "1")]
-    Fo  = [r for r in rows if r.get("fill_opt") == "yes" and r.get("won") in ("0", "1")]
-    Foc = [r for r in rows if _vpc(r) > 0 and r.get("won") in ("0", "1")]
+    posted  = [r for r in rows if r.get("status") in ("filled", "no_fill") and _deep(r)]
+    # BRACKET × CANCEL sobre fills v2 PROFUNDOS: SUELO=final cola; TECHO=frente cola; TECHO+CANCEL=objetivo.
+    Fc  = [r for r in rows if _deep(r) and r.get("status") == "filled" and r.get("won") in ("0", "1")]
+    Fo  = [r for r in rows if _deep(r) and r.get("fill_opt") == "yes" and r.get("won") in ("0", "1")]
+    Foc = [r for r in rows if _deep(r) and _vpc(r) > 0 and r.get("won") in ("0", "1")]
     cons = _m2_stats(Fc)
     opt  = _m2_stats(Fo)
     opc  = _m2_stats(Foc)
-    fr_cons = round(len([r for r in rows if r.get("status") == "filled"]) / len(posted) * 100, 1) if posted else 0.0
-    fr_opt  = round(len([r for r in rows if r.get("fill_opt") == "yes"]) / len(posted) * 100, 1) if posted else 0.0
-    fr_opc  = round(len([r for r in rows if _vpc(r) > 0]) / len(posted) * 100, 1) if posted else 0.0
-    ncancel = len([r for r in rows if r.get("cancelled") == "yes"])
+    fr_cons = round(len([r for r in rows if _deep(r) and r.get("status") == "filled"]) / len(posted) * 100, 1) if posted else 0.0
+    fr_opt  = round(len([r for r in rows if _deep(r) and r.get("fill_opt") == "yes"]) / len(posted) * 100, 1) if posted else 0.0
+    fr_opc  = round(len([r for r in rows if _deep(r) and _vpc(r) > 0]) / len(posted) * 100, 1) if posted else 0.0
+    ncancel = len([r for r in rows if _deep(r) and r.get("cancelled") == "yes"])
     by_zone = {z: _m2_stats([r for r in Foc if lo <= float(r["bid"]) < hi])
                for lo, hi, z in [(0, .20, "<20c"), (.20, .40, "20-40c")]}  # techo+cancel por zona
 
-    # Veredicto sobre TECHO+CANCEL = la estrategia real (umbral 150: opciones baratas = alta varianza,
-    # n > 3.84·p(1−p)/edge² ≈ 165 para +5.45pp a <20¢; a 40 sería ruido):
-    MIN_VERDICT = 150
+    # Veredicto sobre TECHO+CANCEL (v2 profundo). Umbral 40: el edge deep (+15.75pp) confirma con menos
+    # fills (n > 3.84·p(1−p)/edge² ≈ 30) que el al-toque (+5.55pp → ~150).
+    MIN_VERDICT = 40
     if opc is None or opc["n"] < MIN_VERDICT:
         verdict = ("wait", f"{opc['n'] if opc else 0}/{MIN_VERDICT} fills (techo+cancel) — sin veredicto "
                    f"(n bajo = ruido; opciones baratas exigen ~150).")

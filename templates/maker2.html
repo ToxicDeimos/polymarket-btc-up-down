@@ -40,7 +40,7 @@
 
 <div class="header">
   <div class="dot off" id="dot"></div>
-  <h1>Maker2 Paper Bot <span class="muted" style="font-weight:400">(DRY · experimento #9 · cobrar el spread en &lt;40¢)</span></h1>
+  <h1>Maker2 Paper Bot <span class="muted" style="font-weight:400">(DRY · exp #9 · v2 PROFUNDO · bid = best−2¢ en &lt;40¢)</span></h1>
   <a href="/momentum">momentum</a><a href="/maker">maker v1</a>
   <span id="last-update">—</span>
 </div>
@@ -52,7 +52,7 @@
   <div class="card"><h2>Tasa llenado (t.+cancel)</h2><div class="val" id="k-froc">—</div><div class="sub" id="k-frs">techo — · conservador —</div></div>
   <div class="card"><h2>TECHO · EDGE (sin cancel)</h2><div class="val" id="k-opt">—</div><div class="sub" id="k-opt-sub">frente cola · win−bid</div></div>
   <div class="card" style="border-color:#6f2530"><h2>SUELO · EDGE (final cola)</h2><div class="val" id="k-cons">—</div><div class="sub" id="k-cons-sub">conservador · win−bid</div></div>
-  <div class="card"><h2>Progreso veredicto</h2><div class="val" id="k-prog">—</div><div class="sub">≥150 fills (baratas=alta varianza)</div></div>
+  <div class="card"><h2>Progreso veredicto</h2><div class="val" id="k-prog">—</div><div class="sub">≥40 fills (v2 profundo, edge alto)</div></div>
 </div>
 
 <div class="verdict wait" id="verdict">—</div>
@@ -122,7 +122,7 @@ async function refresh(){
     $('k-frs').textContent=`techo ${s.fr_opt}% · conservador ${s.fr_cons}%`;
     kEdge('k-opt','k-opt-sub',s.opt,'frente cola (sin cancel)');
     kEdge('k-cons','k-cons-sub',s.cons,'conservador (final)');
-    $('k-prog').textContent=`${Math.min(s.opc?s.opc.n:0,150)}/150`;
+    $('k-prog').textContent=`${Math.min(s.opc?s.opc.n:0,40)}/40`;
     $('verdict').className=`verdict ${s.verdict.kind}`; $('verdict').textContent=s.verdict.text;
 
     let zr=`<tr><td><b>★ TECHO+CANCEL (objetivo)</b></td>${stat(s.opc)}</tr>`+
