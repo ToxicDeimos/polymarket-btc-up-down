@@ -82,6 +82,10 @@
       <tbody id="trades-body"></tbody>
     </table>
     <div class="sub" id="trades-empty" style="display:none;margin-top:8px">Sin ventanas aún.</div>
+    <div class="sub" style="margin-top:8px">
+      En <b>COMPRA</b>, <span class="green">sí/no</span> = ganó (o no) <b>tu posición</b>. En <b>skip</b> no operamos:
+      <span class="muted">fav sí/fav no</span> = si el <b>favorito</b> habría ganado (dato de sombra), <b>sin P&amp;L</b>.
+    </div>
   </div>
 </div>
 
@@ -140,6 +144,9 @@ async function refresh(){
         const stL=t.status==='bought'?'COMPRA':'skip';
         let wc='pend',wl='pend.';
         if(t.won==='1'){wc='win';wl='sí';} else if(t.won==='0'){wc='lose';wl='no';}
+        // En los SKIP no operamos: 'won' = ganó el FAVORITO (sombra), no que ganáramos dinero.
+        // Pastilla muteada + prefijo "fav" para no confundir con una posición ganada.
+        if(t.status==='skip' && t.won!==''&&t.won!=null){wc='skip';wl=(t.won==='1'?'fav sí':'fav no');}
         const side=t.fav==='Up'?'up':(t.fav==='Down'?'down':'skip');
         const url=`https://polymarket.com/event/${t.slug}`;
         return `<tr><td><a href="${url}" target="_blank">${etRange(t.ws)}</a></td>`+
