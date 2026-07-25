@@ -269,6 +269,26 @@ def analyze():
     for lo, hi, lab in [(0, .20, "<20c"), (.20, .40, "20-40c")]:
         rep(f"  {lab}", [r for r in Foc if lo <= float(r["bid"]) < hi])
 
+    # ── DIAGNÓSTICO DE SELECCIÓN ADVERSA (el que responde "¿esto funciona?") ────────────────────
+    # ¿ganamos MENOS en las ventanas que LLENAMOS que en las que NO? Si un maker lento se lleva los
+    # perdedores (longshot cayendo = alguien vende = nos llena) y se pierde los ganadores (longshot
+    # sube tranquilo, nadie vende, no nos llena), el win de las llenadas << el de las no-llenadas.
+    # Usa TODAS las ventanas resueltas (toque+profundo) = máxima potencia, no espera al EV.
+    RES = [r for r in rows if r.get("status") in ("filled", "no_fill") and r.get("won") in ("0", "1")]
+    fill_w = [r for r in RES if r.get("fill_opt") == "yes"]
+    nofl_w = [r for r in RES if r.get("fill_opt") != "yes"]
+    def _wr(rs): return (sum(int(r["won"]) for r in rs) / len(rs)) if rs else None
+    wf, wn = _wr(fill_w), _wr(nofl_w)
+    print("\nDIAGNÓSTICO SELECCIÓN ADVERSA — ¿llenamos los PERDEDORES y nos perdemos los GANADORES?")
+    if wf is not None: print(f"  ventanas que LLENAMOS:     n={len(fill_w):>4}  win {wf:.1%}  precio medio {sum(float(r['bid']) for r in fill_w)/len(fill_w):.1%}")
+    if wn is not None: print(f"  ventanas que NO llenamos:  n={len(nofl_w):>4}  win {wn:.1%}  (sombra: qué habría pasado)")
+    if wf is not None and wn is not None:
+        gap = (wf - wn) * 100
+        print(f"  → GAP: {gap:+.1f}pp." + (
+            "  ⚠ MUY negativo = nos llevamos los perdedores = selección adversa SEVERA (un maker de Pi no puede)."
+            if gap < -5 else
+            "  ~plano = nuestros fills son representativos; el rojo es bajo volumen + varianza, no sesgo."))
+
     print(f"\nVEREDICTO (umbral {MIN_VERDICT} sobre TECHO+CANCEL — opciones baratas = alta varianza):")
     et = _ev(Foc)
     if len(Foc) < MIN_VERDICT:
