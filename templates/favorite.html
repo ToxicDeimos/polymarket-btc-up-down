@@ -68,8 +68,9 @@
       Compra el <b>favorito</b> (lado con mayor ask) a 240s si está en <b>82-95¢</b>, y aguanta. <b>EDGE</b> =
       win − ask (el sesgo favorito-longshot: la gente sobrepaga longshots → los favoritos quedan levemente
       infravalorados). Backtest sobre miles de ventanas: <b>+0.84pp y generaliza</b> (train +0.83 / test +0.84);
-      90-95¢ el punto dulce (+1.49pp). Las bandas de <b>sombra</b> (72-82¢, 95-99¢) NO se operan — miden por
-      qué el corte 82-95 es el bueno. Fino y de alta varianza: el veredicto necesita ≥400 fills.
+      90-95¢ el punto dulce (+1.49pp). Las bandas de <b>sombra</b> (62-82¢ y 95-99¢) NO se operan: sus
+      WIN/EDGE/P&amp;L van con <b>~</b> porque son <b>hipotéticos</b> (lo que habrías hecho si operaras ahí) y
+      sirven para ver por qué el corte 82-95¢ es el bueno. Fino y de alta varianza: el veredicto necesita ≥400 fills.
     </div>
   </div>
 </div>
@@ -96,13 +97,15 @@ function etRange(ws){
   const f=d=>d.toLocaleTimeString('en-US',{timeZone:'America/New_York',hour:'2-digit',minute:'2-digit',hour12:false});
   return f(a)+'–'+f(b)+' ET';
 }
-function stat(st){
+function stat(st,hypo){
   if(!st) return '<td colspan="6" class="muted">sin fills</td>';
   const wC=st.win_rate>st.ask?'green':'red', eC=st.edge>=0?'green':'red', pC=st.pnl>=0?'green':'red';
-  return `<td>${st.n}</td><td class="${wC}">${st.win_rate}% <span class="muted">(${st.ci_lo}-${st.ci_hi})</span></td>`+
-         `<td class="muted">${st.ask}%</td><td class="${eC}">${st.edge>=0?'+':''}${st.edge}pp</td>`+
-         `<td class="${eC}">${st.rel>=0?'+':''}${st.rel}%</td>`+
-         `<td class="${pC}">${st.pnl>=0?'+':''}$${st.pnl.toFixed(2)}</td>`;
+  // hypo = banda de sombra (no operada): sus cifras son hipotéticas → prefijo '~' y sin P&L real.
+  const p=hypo?'~':'', tt=hypo?' title="hipotético — banda no operada, sin P&L real"':'';
+  return `<td>${st.n}</td><td class="${wC}"${tt}>${p}${st.win_rate}% <span class="muted">(${st.ci_lo}-${st.ci_hi})</span></td>`+
+         `<td class="muted">${st.ask}%</td><td class="${eC}"${tt}>${p}${st.edge>=0?'+':''}${st.edge}pp</td>`+
+         `<td class="${eC}"${tt}>${p}${st.rel>=0?'+':''}${st.rel}%</td>`+
+         `<td class="${pC}"${tt}>${p}${st.pnl>=0?'+':''}$${st.pnl.toFixed(2)}</td>`;
 }
 async function refresh(){
   try{
@@ -132,7 +135,7 @@ async function refresh(){
     const bb=s.by_band||{};
     for(const b of ['82-90c','90-95c']) zr+=`<tr><td>${b.replace('c','¢')}</td>${stat(bb[b])}</tr>`;
     const sh=s.shadow||{};
-    for(const b of ['62-72c','72-82c','95-99c']) if(sh[b]) zr+=`<tr><td class="muted">sombra ${b.replace('c','¢')}</td>${stat(sh[b])}</tr>`;
+    for(const b of ['62-72c','72-82c','95-99c']) if(sh[b]) zr+=`<tr><td class="muted">sombra ${b.replace('c','¢')}</td>${stat(sh[b],true)}</tr>`;
     $('band-body').innerHTML=zr;
 
     const tb=$('trades-body');
