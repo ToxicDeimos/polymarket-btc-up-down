@@ -37,15 +37,15 @@ def series(rows):
         return idx[i][1] if i >= 0 and ts - idx[i][0] <= maxage else None
     return at
 
-def line(label, rs):
+def line(label, rs, T):
     if not rs:
         print(f"  {label:<24} (sin ventanas)"); return
     n = len(rs); wr = sum(r["won"] for r in rs) / n
-    se = math.sqrt(wr * (1 - wr) / n); edge = (wr - TARGET) * 100
+    se = math.sqrt(wr * (1 - wr) / n); edge = (wr - T) * 100
     lo, hi = max(0, wr - 1.96 * se), min(1, wr + 1.96 * se)
-    rel = edge / (TARGET * 100) * 100
-    sig = "SIG" if lo > TARGET else ("+" if wr > TARGET else "")
-    print(f"  {label:<24} n={n:>6}  win {wr:6.2%}  target {TARGET:.0%}  EDGE {edge:+6.2f}pp  "
+    rel = edge / (T * 100) * 100
+    sig = "SIG" if lo > T else ("+" if wr > T else "")
+    print(f"  {label:<24} n={n:>6}  win {wr:6.2%}  target {T:.0%}  EDGE {edge:+6.2f}pp  "
           f"rel {rel:+6.1f}%  [IC {lo:.1%}-{hi:.1%}] {sig}")
 
 def main():
@@ -55,7 +55,7 @@ def main():
     if not days: print("sin tape_*.csv"); return
     tape = load("tape", days)
     lcl, lsp = series(load("chainlink", days)), series(load("spot", days))
-    print(f"días: {', '.join(days)}  |  cinta {len(tape)}  |  simulando maker3 (bid {TARGET} ambos lados, primer roce)")
+    print(f"días: {', '.join(days)}  |  cinta {len(tape)}  |  simulando maker3 (primer roce, barrido de targets)")
 
     # agrupa trades por ventana (ws del slug); solo BUY? no: cualquier trade a <=TARGET indica que el
     # precio de ese lado tocó nuestro bid → nos habría llenado (somos el primero por llegar temprano).
@@ -69,48 +69,55 @@ def main():
         if not (0 < tp < 1): continue
         W.setdefault(ws, {"cid": x.get("cid"), "trades": []})["trades"].append((tt, tp, x.get("outcome")))
 
-    R = []
+    # precomputa por ventana: trades ordenados por tiempo + ganador (resolución independiente del target)
+    WR = {}
     for ws, w in W.items():
-        # primer trade (por tiempo) a <= TARGET → ahí nos habría llenado (primer roce)
-        cand = sorted((tt, tp, side) for tt, tp, side in w["trades"] if tp <= TARGET and side in ("Up", "Down"))
-        if not cand: continue                            # ningún lado tocó 35¢ = no_fill
-        tt, tp, side = cand[0]
         o, c = lcl(ws, 60), lcl(ws + 300, 60)
         if o is None or c is None: o, c = lsp(ws, 12), lsp(ws + 300, 12)
         if o is None or c is None: continue
         winner = "Up" if c >= o else "Down"
-        R.append({"won": 1 if side == winner else 0, "phase": tt - ws})
-    if len(R) < 100:
-        print(f"solo {len(R)} ventanas con roce a {TARGET} — deja acumular la cinta"); return
+        trades = sorted((tt, tp, side) for tt, tp, side in w["trades"] if side in ("Up", "Down"))
+        WR[ws] = (trades, winner)
+    if len(WR) < 100:
+        print(f"solo {len(WR)} ventanas resueltas — deja acumular la cinta"); return
 
-    ncl = "chainlink" if lcl(list(W)[0] if W else 0, 60) is not None else "spot"
-    print(f"\nventanas donde un lado tocó {TARGET} (nos habríamos llenado): {len(R)}\n")
+    def sim(T):
+        R = []
+        for ws, (trades, winner) in WR.items():
+            cand = next(((tt, tp, side) for tt, tp, side in trades if tp <= T), None)  # primer roce a <=T
+            if cand: R.append({"won": 1 if cand[2] == winner else 0, "phase": cand[0] - ws})
+        return R
+
+    print(f"\nventanas resueltas: {len(WR)}\n")
     print("=" * 92)
-    print(f"MAKER3 simulado sobre la población — ¿el despreciado que toca {TARGET:.0%} REVIERTE (gana >{TARGET:.0%})?")
+    print("BARRIDO DE TARGET — ¿hay ALGÚN precio al que el despreciado que toca T REVIERTE (gana > T)?")
     print("=" * 92)
-    line("TODO", R)
-    print("  — por FASE del primer roce (¿los dips TEMPRANOS revierten más que los tardíos?):")
-    for lo, hi, lab in [(0, 60, "0-60s"), (60, 120, "60-120s"), (120, 195, "120-195s"),
-                        (195, 300, "195-300s"), (300, 1e9, ">300")]:
-        line(lab, [r for r in R if lo <= r["phase"] < hi])
+    best = None
+    for T in (0.08, 0.12, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40):
+        R = sim(T)
+        if len(R) < 50: continue
+        line(f"bid a {T:.0%}", R, T)
+        wr = sum(r["won"] for r in R) / len(R); se = math.sqrt(wr * (1 - wr) / len(R))
+        if wr - 1.96 * se > T and (best is None or (wr - T) > best[1]): best = (T, wr - T)
 
     print("\n" + "=" * 92)
-    print("VEREDICTO (con potencia, sin esperar a los fills en vivo)")
+    print("VEREDICTO (con potencia, sobre miles de ventanas)")
     print("=" * 92)
-    wr = sum(r["won"] for r in R) / len(R); se = math.sqrt(wr * (1 - wr) / len(R))
-    print(f"  · maker3 en vivo: n=5 (ruido). Aquí: n={len(R)}.")
-    if wr - 1.96 * se > TARGET:
-        print(f"  → win {wr:.1%} > target {TARGET:.0%} SIGNIFICATIVO → maker3 es +EV en la población. El")
-        print("    early-rester SÍ captura el edge; el rojo de n=5 es ruido y convergerá. Llegar temprano funciona.")
-    elif wr > TARGET:
-        print(f"  → win {wr:.1%} > target {TARGET:.0%} pero no significativo — al borde. Más días de cinta.")
+    if best:
+        print(f"  → SÍ hay edge SIGNIFICATIVO: mejor target {best[0]:.0%} (EDGE +{best[1]*100:.1f}pp). El early-")
+        print(f"    rester funciona PROFUNDO, no a 35¢. Cambiar el TARGET de maker3 a {best[0]:.0%} y re-medir en vivo.")
+        print("\n  — por FASE al mejor target:")
+        R = sim(best[0])
+        for lo, hi, lab in [(0, 60, "0-60s"), (60, 120, "60-120s"), (120, 195, "120-195s"),
+                            (195, 300, "195-300s"), (300, 1e9, ">300")]:
+            line(lab, [r for r in R if lo <= r["phase"] < hi], best[0])
     else:
-        print(f"  → win {wr:.1%} <= target {TARGET:.0%}: el despreciado que toca {TARGET:.0%} NO revierte lo")
-        print("    suficiente. maker3 es −EV incluso en la población → llegar temprano tampoco basta a este")
-        print("    precio. Habría que probar OTRO target (¿más profundo? ¿más alto?) o cerrar. Negativo honesto.")
+        print("  → NINGÚN target da +EV: el 'primer roce' (comprar el lado que cae a nuestro bid) es")
+        print("    adverso a TODO precio. El despreciado que toca cualquier nivel sigue cayendo, no revierte.")
+        print("    maker3 (early-rester comprando el que cae) está MUERTO a todos los precios. Cierre honesto.")
 
-    print("\nCAVEATS: la cinta se muestrea cada 20s → el 'primer roce' es aproximado (podríamos llenarnos un")
-    print("poco antes). El precio de fill se asume = TARGET (nuestro bid). Resolución agregada por Chainlink/spot.")
+    print("\nCAVEATS: cinta muestreada cada 20s → 'primer roce' aproximado. Precio de fill = target. Resolución")
+    print("agregada por Chainlink/spot. El barrido responde si existe UN precio con edge, no lo optimiza fino.")
 
 if __name__ == "__main__":
     main()
