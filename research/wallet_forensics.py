@@ -113,7 +113,7 @@ def main():
         for r in T:
             if r["w"] == wallet: byw[r["ws"]].append(r)
         scalp = hold = 0; depths = []; mom = fade = 0; held_won = held_n = 0
-        hold_secs = []; entry_prices = []
+        hold_secs = []; entry_prices = []; band = []   # (precio_entrada, won) de sus posiciones aguantadas
         for ws, ops in byw.items():
             buys = [o for o in ops if o["bs"] == "BUY"]
             sells = [o for o in ops if o["bs"] == "SELL"]
@@ -139,7 +139,9 @@ def main():
                 hold += 1
                 wn = winner(ws)
                 if wn is not None:
-                    held_n += 1; held_won += 1 if first["side"] == wn else 0
+                    w1 = 1 if first["side"] == wn else 0
+                    held_n += 1; held_won += w1
+                    band.append((first["p"], w1))
         nw = scalp + hold
         if nw == 0: print("  (sin ventanas reconstruibles)"); continue
         print(f"  ventanas operadas: {nw}")
@@ -155,6 +157,17 @@ def main():
             print(f"  profundidad vs MID del libro: mediana {dp[len(dp)//2]:+.1f}¢  (>0 = compra por debajo del mid)")
         if mom + fade:
             print(f"  lado vs movimiento: momentum {mom} / fade {fade}  ({mom*100//(mom+fade)}% con el move)")
+        # ¿de qué BANDA de precio sale su dinero? win vs precio pagado (EV/share) por banda
+        if band:
+            print("  DINERO por banda de precio de entrada (win vs precio = EV/share; ¿solo favoritos?):")
+            for lo, hi, lab in [(0, .20, "<20¢ longshot"), (.20, .40, "20-40¢"), (.40, .62, "40-62¢"),
+                                (.62, .82, "62-82¢"), (.82, .95, "82-95¢ (mi bot)"), (.95, 1.01, "95-99¢")]:
+                seg = [(p, w) for p, w in band if lo <= p < hi]
+                if not seg: continue
+                n = len(seg); wr = sum(w for _, w in seg) / n; ap = sum(p for p, _ in seg) / n
+                ev = (wr - ap) * 100
+                print(f"     {lab:<18} n={n:>4}  win {wr:5.1%}  precio {ap:5.1%}  EV/share {ev:+6.2f}pp"
+                      + ("  ← +EV" if ev > 1 else ("  ← −EV" if ev < -1 else "")))
 
     print("\n" + "=" * 96)
     print("CÓMO LEER")
@@ -164,6 +177,8 @@ def main():
     print("  el que no construimos. maker2/maker3 (comprar y aguantar) atacaban el problema equivocado.")
     print("· Si HOLD domina → apuestan al resultado; el edge es la SELECCIÓN de qué comprar (lo que no")
     print("  hemos podido replicar). Mira entonces precio de entrada / profundidad / lado por si hay regla.")
+    print("· DINERO por banda: ¿el wallet gana SOLO en 82-95¢ (mi bot lo captura) o también en otras bandas")
+    print("  (mi bot se pierde parte de su edge)? Si hay +EV en <40¢ o 62-82¢, hay que ampliar el bot.")
 
 if __name__ == "__main__":
     main()
