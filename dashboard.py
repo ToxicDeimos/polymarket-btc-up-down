@@ -12,15 +12,16 @@ from flask import Flask, jsonify, render_template, redirect
 app = Flask(__name__)
 
 BASE = os.path.dirname(__file__)
-MOM_FILE     = os.path.join(BASE, "research", "momentum_paper_log.csv")
-MAKER3_FILE  = os.path.join(BASE, "research", "maker3_paper_log.csv")
+MOM_FILE      = os.path.join(BASE, "research", "momentum_paper_log.csv")
+MAKER3_FILE   = os.path.join(BASE, "research", "maker3_paper_log.csv")
+FAVORITE_FILE = os.path.join(BASE, "research", "favorite_paper_log.csv")
 
 
 # ── Rutas ─────────────────────────────────────────────────────────────────────
 
 @app.route("/")
 def index():
-    return redirect("/maker3")
+    return redirect("/favorite")
 
 
 # ── Momentum Paper Bot (DRY, experimento #3) ──────────────────────────────────
@@ -216,6 +217,77 @@ def api_maker3():
         "summary": {"n": len(rows), "status": dict(st), "filled": len(filled),
                     "resolved": len(F), "pending": pending, "fillrate": fillrate,
                     "overall": overall, "by_phase": by_phase,
+                    "verdict": {"kind": verdict[0], "text": verdict[1]}},
+        "trades": [trade(r) for r in shown],
+    })
+
+
+def _fav_stats(rows):
+    """EDGE del favorito = win − ask (el precio pagado). Sesgo favorito-longshot."""
+    n = len(rows)
+    if n == 0:
+        return None
+    wins = sum(1 for r in rows if r.get("won") == "1")
+    asks = [float(r["ask"]) for r in rows if r.get("ask")]
+    wr = wins / n
+    ap = statistics.mean(asks) if asks else 0.0
+    se = math.sqrt(wr * (1 - wr) / n)
+    return {"n": n, "win_rate": round(wr * 100, 1),
+            "ci_lo": round(max(0, wr - 1.96 * se) * 100, 1),
+            "ci_hi": round(min(1, wr + 1.96 * se) * 100, 1),
+            "ask": round(ap * 100, 1), "edge": round((wr - ap) * 100, 2),
+            "rel": round((wr - ap) / ap * 100, 1) if ap else 0.0}
+
+
+@app.route("/favorite")
+def favorite():
+    return render_template("favorite.html")
+
+
+@app.route("/api/favorite")
+def api_favorite():
+    rows = _read_csv(FAVORITE_FILE)
+    if not rows:
+        return jsonify({"summary": {"n": 0}, "trades": []})
+    from collections import Counter
+    st = Counter(r.get("status", "") for r in rows)
+    bought = [r for r in rows if r.get("status") == "bought"]
+    B = [r for r in bought if r.get("won") in ("0", "1")]
+    pending = len(bought) - len(B)
+    fillrate = round(len(bought) / len(rows) * 100, 1) if rows else 0.0
+    overall = _fav_stats(B)
+    by_band = {lab: _fav_stats([r for r in B if lo <= float(r["ask"]) < hi])
+               for lo, hi, lab in [(0.82, 0.90, "82-90c"), (0.90, 0.95, "90-95c")]}
+    S = [r for r in rows if r.get("status") == "skip" and r.get("won") in ("0", "1")]
+    shadow = {lab: _fav_stats([r for r in S if lo <= float(r["ask"]) < hi])
+              for lo, hi, lab in [(0.62, 0.72, "62-72c"), (0.72, 0.82, "72-82c"), (0.95, 1.01, "95-99c")]}
+
+    MIN_VERDICT = 400
+    if overall is None or overall["n"] < MIN_VERDICT:
+        verdict = ("wait", f"{overall['n'] if overall else 0}/{MIN_VERDICT} fills — sin veredicto "
+                   f"(margen fino +0.84pp a ~89¢ = alta varianza → exige n grande).")
+    elif overall["edge"] > 0:
+        if overall["ci_lo"] > overall["ask"]:
+            verdict = ("real", f"win {overall['win_rate']}% > ask {overall['ask']}% SIGNIFICATIVO "
+                       f"(n={overall['n']}, EDGE {overall['edge']:+}pp) → el sesgo favorito-longshot es NUESTRO. "
+                       f"Primer edge real y confirmado del proyecto.")
+        else:
+            verdict = ("maybe", f"win {overall['win_rate']}% > ask {overall['ask']}% pero no significativo "
+                       f"(n={overall['n']}, IC {overall['ci_lo']}-{overall['ci_hi']}%). Seguir acumulando.")
+    else:
+        verdict = ("dead", f"win {overall['win_rate']}% ≤ ask {overall['ask']}% con n≥{MIN_VERDICT}: el "
+                   f"favorito no bate su precio en vivo. Documentar y cerrar.")
+
+    def trade(r):
+        return {"ws": int(r["ws"]), "slug": r.get("slug"), "fav": r.get("fav"),
+                "ask": r.get("ask"), "ask2": r.get("ask2"), "status": r.get("status"),
+                "winner": r.get("winner"), "won": r.get("won")}
+    shown = [r for r in rows if r.get("status") in ("bought", "skip")][-80:][::-1]
+
+    return jsonify({
+        "summary": {"n": len(rows), "status": dict(st), "bought": len(bought),
+                    "resolved": len(B), "pending": pending, "fillrate": fillrate,
+                    "overall": overall, "by_band": by_band, "shadow": shadow,
                     "verdict": {"kind": verdict[0], "text": verdict[1]}},
         "trades": [trade(r) for r in shown],
     })
