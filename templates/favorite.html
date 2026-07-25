@@ -51,6 +51,7 @@
   <div class="card"><h2>Fills resueltos</h2><div class="val" id="k-res">—</div><div class="sub" id="k-pend">—</div></div>
   <div class="card"><h2>WIN</h2><div class="val" id="k-wr">—</div><div class="sub" id="k-ci">vs ask (break-even)</div></div>
   <div class="card" style="border-color:#1f6f3a"><h2>★ EDGE (win − ask)</h2><div class="val" id="k-edge">—</div><div class="sub" id="k-rel">sesgo favorito-longshot</div></div>
+  <div class="card"><h2>P&amp;L (·$1/ventana)</h2><div class="val" id="k-pnl">—</div><div class="sub" id="k-staked">—</div></div>
   <div class="card"><h2>Progreso veredicto</h2><div class="val" id="k-prog">—</div><div class="sub">≥400 fills (margen fino)</div></div>
 </div>
 
@@ -60,7 +61,7 @@
   <div class="card">
     <h2>EDGE por banda de precio del favorito</h2>
     <table>
-      <thead><tr><th></th><th>fills</th><th>WIN</th><th>ask medio</th><th>EDGE</th><th>retorno rel.</th></tr></thead>
+      <thead><tr><th></th><th>fills</th><th>WIN</th><th>ask medio</th><th>EDGE</th><th>retorno rel.</th><th>P&amp;L ($1/v)</th></tr></thead>
       <tbody id="band-body"></tbody>
     </table>
     <div class="sub" style="margin-top:8px">
@@ -92,11 +93,12 @@ function etRange(ws){
   return f(a)+'–'+f(b)+' ET';
 }
 function stat(st){
-  if(!st) return '<td colspan="5" class="muted">sin fills</td>';
-  const wC=st.win_rate>st.ask?'green':'red', eC=st.edge>=0?'green':'red';
+  if(!st) return '<td colspan="6" class="muted">sin fills</td>';
+  const wC=st.win_rate>st.ask?'green':'red', eC=st.edge>=0?'green':'red', pC=st.pnl>=0?'green':'red';
   return `<td>${st.n}</td><td class="${wC}">${st.win_rate}% <span class="muted">(${st.ci_lo}-${st.ci_hi})</span></td>`+
          `<td class="muted">${st.ask}%</td><td class="${eC}">${st.edge>=0?'+':''}${st.edge}pp</td>`+
-         `<td class="${eC}">${st.rel>=0?'+':''}${st.rel}%</td>`;
+         `<td class="${eC}">${st.rel>=0?'+':''}${st.rel}%</td>`+
+         `<td class="${pC}">${st.pnl>=0?'+':''}$${st.pnl.toFixed(2)}</td>`;
 }
 async function refresh(){
   try{
@@ -116,8 +118,10 @@ async function refresh(){
       $('k-ci').textContent=`IC ${o.ci_lo}-${o.ci_hi}% · ask ${o.ask}%`;
       $('k-edge').textContent=`${o.edge>=0?'+':''}${o.edge}pp`; $('k-edge').className=`val ${o.edge>=0?'green':'red'}`;
       $('k-rel').textContent=`retorno rel. ${o.rel>=0?'+':''}${o.rel}%`;
+      $('k-pnl').textContent=`${o.pnl>=0?'+':''}$${o.pnl.toFixed(2)}`; $('k-pnl').className=`val ${o.pnl>=0?'green':'red'}`;
+      $('k-staked').textContent=`sobre $${o.staked} apostados · ${o.rel>=0?'+':''}${o.rel}% ROI`;
       $('k-prog').textContent=`${Math.min(o.n,400)}/400`;
-    } else {$('k-wr').textContent='—';$('k-edge').textContent='—';$('k-prog').textContent='0/400';}
+    } else {$('k-wr').textContent='—';$('k-edge').textContent='—';$('k-pnl').textContent='—';$('k-prog').textContent='0/400';}
     $('verdict').className=`verdict ${s.verdict.kind}`; $('verdict').textContent=s.verdict.text;
 
     let zr=`<tr><td><b>TODO (82-95¢)</b></td>${stat(o)}</tr>`;

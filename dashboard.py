@@ -232,11 +232,18 @@ def _fav_stats(rows):
     wr = wins / n
     ap = statistics.mean(asks) if asks else 0.0
     se = math.sqrt(wr * (1 - wr) / n)
+    # P&L apostando $1 por ventana: si gana cobra 1/ask (profit 1/ask−1), si pierde −1.
+    # 'staked' = n dólares (un $1 por fill). pnl_share = P&L comprando 1 acción/ventana (win − ask).
+    pnl   = sum((1 / float(r["ask"]) - 1) if r.get("won") == "1" else -1
+                for r in rows if r.get("won") in ("0", "1"))
+    pshare = sum((1 - float(r["ask"])) if r.get("won") == "1" else -float(r["ask"])
+                 for r in rows if r.get("won") in ("0", "1"))
     return {"n": n, "win_rate": round(wr * 100, 1),
             "ci_lo": round(max(0, wr - 1.96 * se) * 100, 1),
             "ci_hi": round(min(1, wr + 1.96 * se) * 100, 1),
             "ask": round(ap * 100, 1), "edge": round((wr - ap) * 100, 2),
-            "rel": round((wr - ap) / ap * 100, 1) if ap else 0.0}
+            "rel": round((wr - ap) / ap * 100, 1) if ap else 0.0,
+            "pnl": round(pnl, 2), "pnl_share": round(pshare, 2), "staked": n}
 
 
 @app.route("/favorite")
