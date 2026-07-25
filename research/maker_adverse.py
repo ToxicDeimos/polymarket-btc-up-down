@@ -103,7 +103,8 @@ def main():
         if sp_a is None or sp_b is None: continue
         raw_bps = (sp_b - sp_a) / sp_b * 10000
         toward = raw_bps if x.get("outcome") == "Up" else -raw_bps   # >0 BTC fue A FAVOR de X, <0 en contra
-        M.append({"p": p, "won": won, "toward": toward})
+        M.append({"p": p, "won": won, "toward": toward,
+                  "phase": t - ws, "depth": b1 - p})               # fase del fill y profundidad bajo el mejor bid
     if len(M) < 300:
         print(f"solo {len(M)} fills maker con spot para lookback — deja acumular"); return
     Z = [m for m in M if m["p"] < ZONE_HI]
@@ -133,15 +134,33 @@ def main():
               + ("   ← mejora" if e > base + 0.005 else ""))
 
     print("\n" + "=" * 100)
+    print("3) ¿ESTÁ EL EDGE EN EL PUNTO DE OPERACIÓN DE MAKER2? — por FASE del fill y PROFUNDIDAD")
+    print("=" * 100)
+    print("   maker2 postea a 195s (fase 195-300) AL mejor bid (profundidad ≈0). Si el edge de los ganadores")
+    print("   vive en fases TEMPRANAS o comprando MÁS PROFUNDO, maker2 está en el sitio equivocado — y lo")
+    print("   sabemos YA con la potencia de la población, sin esperar a sus fills.\n")
+    print("   — por FASE del fill (maker2 vive en 195-300):")
+    for lo, hi, lab in [(0, 60, "0-60s"), (60, 120, "60-120s"), (120, 195, "120-195s"),
+                        (195, 300, "195-300s  ← FASE DE MAKER2"), (300, 1e9, ">300s (15m)")]:
+        line(lab, [m for m in Z if lo <= m["phase"] < hi])
+    print("   — por PROFUNDIDAD bajo el mejor bid (¢ por debajo; maker2 postea a ≈0 = al toque):")
+    for lo, hi, lab in [(-1e9, 0.005, "al mejor bid ≈0  ← MAKER2"), (0.005, 0.02, "1-2¢ más profundo"),
+                        (0.02, 0.05, "2-5¢ más profundo"), (0.05, 1e9, ">5¢ más profundo")]:
+        line(lab, [m for m in Z if lo <= m["depth"] < hi])
+    # combo: el punto EXACTO de maker2 (fase 195-300 Y al toque)
+    m2 = [m for m in Z if 195 <= m["phase"] < 300 and m["depth"] < 0.02]
+    print()
+    line("PUNTO EXACTO maker2 (195-300s, ≤2¢)", m2)
+
+    print("\n" + "=" * 100)
     print("LECTURA")
     print("=" * 100)
-    print("· Si el EDGE sube de 'en contra' a 'a favor' y algún umbral MEJORA el base → la selección adversa")
-    print("  es real y CANCELAR la mitiga: hay que construir el cancel-al-girarse en el bot maker.")
-    print("· Si es PLANO (mismo edge en todas las franjas) → es puro spread, aguantar a resolución vale,")
-    print("  y maker2 SIN cancelar ya es correcto; el cuello de botella sería solo el llenado.")
-    print("· Techo optimista: mide fills ya ocurridos ignorando NUESTRA latencia de reacción. Si aquí el")
-    print("  cancel no ayuda, en vivo (más lento) tampoco. Si ayuda, el siguiente paso es cuánto sobrevive")
-    print("  a la latencia real.")
+    print("· Sección 1/2: si el EDGE sube de 'en contra' a 'a favor' y un umbral MEJORA el base → cancelar")
+    print("  captura el edge (ya construido, 3bps). Si es plano → puro spread.")
+    print("· Sección 3 (la que decide el destino de maker2 SIN esperar): si el 'PUNTO EXACTO maker2'")
+    print("  (195-300s, al toque) es +EV como el resto → maker2 está bien colocado, el rojo de n=20 es ruido")
+    print("  y convergerá. Si es −EV mientras las fases tempranas / la profundidad SÍ ganan → maker2 opera")
+    print("  en el sitio equivocado; el arreglo es postear ANTES y/o MÁS PROFUNDO, no esperar.")
 
 if __name__ == "__main__":
     main()
