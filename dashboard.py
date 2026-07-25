@@ -441,9 +441,12 @@ def api_maker2():
     by_zone = {z: _m2_stats([r for r in Foc if lo <= float(r["bid"]) < hi])
                for lo, hi, z in [(0, .20, "<20c"), (.20, .40, "20-40c")]}  # techo+cancel por zona
 
-    # Veredicto sobre TECHO+CANCEL = la estrategia real (umbral 40):
-    if opc is None or opc["n"] < 40:
-        verdict = ("wait", f"{opc['n'] if opc else 0}/40 fills (techo+cancel) — sin veredicto.")
+    # Veredicto sobre TECHO+CANCEL = la estrategia real (umbral 150: opciones baratas = alta varianza,
+    # n > 3.84·p(1−p)/edge² ≈ 165 para +5.45pp a <20¢; a 40 sería ruido):
+    MIN_VERDICT = 150
+    if opc is None or opc["n"] < MIN_VERDICT:
+        verdict = ("wait", f"{opc['n'] if opc else 0}/{MIN_VERDICT} fills (techo+cancel) — sin veredicto "
+                   f"(n bajo = ruido; opciones baratas exigen ~150).")
     elif opc["edge"] <= 0:
         verdict = ("dead", f"Ni con cancelación es +EV (EDGE {opc['edge']:+}pp): el spread no compensa la "
                    f"selección adversa desde una Pi. Muerte.")

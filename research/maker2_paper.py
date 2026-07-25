@@ -32,6 +32,9 @@ ENTRY      = 195       # s dentro de la ventana 5m (mediana de entrada de los ma
 BID_MIN    = 0.03      # no postear por debajo (ruido/resolución)
 BID_MAX    = 0.40      # zona BARATA: donde el retorno relativo del spread es grande
 POLL       = 3         # s entre sondeos del libro/cinta/spot mientras la orden está viva
+MIN_VERDICT = 150      # fills (techo+cancel) para veredicto. NO 40: la varianza de opciones baratas
+                       # exige n > 3.84·p(1−p)/edge² ≈ 165 para un edge de +5.45pp a <20¢. A 40 el
+                       # "veredicto" sería sobre ruido (el IC del win se traga el break-even).
 CANCEL_BPS = 3.0       # gestión de SELECCIÓN ADVERSA: retirar el bid si BTC (spot Binance) se mueve
                        # >=3bps EN CONTRA del lado comprado desde que posteamos. Umbral ÓPTIMO medido
                        # sobre 12.305 fills maker reales (maker_adverse.py): el cubo ">2bps en contra"
@@ -258,10 +261,10 @@ def analyze():
     for lo, hi, lab in [(0, .20, "<20c"), (.20, .40, "20-40c")]:
         rep(f"  {lab}", [r for r in Foc if lo <= float(r["bid"]) < hi])
 
-    print("\nVEREDICTO (umbral 40 sobre TECHO+CANCEL = la estrategia real):")
+    print(f"\nVEREDICTO (umbral {MIN_VERDICT} sobre TECHO+CANCEL — opciones baratas = alta varianza):")
     et = _ev(Foc)
-    if len(Foc) < 40:
-        print(f"  → {len(Foc)}/40 fills(techo+cancel), sin veredicto")
+    if len(Foc) < MIN_VERDICT:
+        print(f"  → {len(Foc)}/{MIN_VERDICT} fills(techo+cancel), sin veredicto (n bajo = ruido puro)")
     elif et <= 0:
         print("  → ni con cancelación es +EV → el spread no compensa la selección adversa desde una Pi. Muerte.")
     else:
