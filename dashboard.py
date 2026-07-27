@@ -63,8 +63,10 @@ def api_favorite():
     pending = len(bought) - len(B)
     fillrate = round(len(bought) / len(rows) * 100, 1) if rows else 0.0
     overall = _fav_stats(B)
+    # el bot compra con ask <= 0.95 INCLUSIVE, así que el tramo alto llega a 0.9501 para no dejar
+    # fuera los fills en el techo exacto de 0.95 (si no, TODO > 82-90 + 90-95).
     by_band = {lab: _fav_stats([r for r in B if lo <= float(r["ask"]) < hi])
-               for lo, hi, lab in [(0.82, 0.90, "82-90c"), (0.90, 0.95, "90-95c")]}
+               for lo, hi, lab in [(0.82, 0.90, "82-90c"), (0.90, 0.9501, "90-95c")]}
     S = [r for r in rows if r.get("status") == "skip" and r.get("won") in ("0", "1")]
     shadow = {lab: _fav_stats([r for r in S if lo <= float(r["ask"]) < hi])
               for lo, hi, lab in [(0.62, 0.72, "62-72c"), (0.72, 0.82, "72-82c"), (0.95, 1.01, "95-99c")]}
