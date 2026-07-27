@@ -11,10 +11,10 @@ montón. Con disciplina: puerta de potencia (no concluye sin datos), train/test 
 población (¿el favorito del montón también gana más ahí? = replicable, no skill).
 
 Features de order-flow a la entrada (lado del favorito, desde el top-3 del libro + cinta):
-  · spread = a1 − b1                          · imb1  = bs1/(bs1+as1)   (presión bid en el tope)
-  · imb3  = Σbid/(Σbid+Σask) 3 niveles        · micro = microprice − mid (>0 = presión al alza)
-  · aflow = neto BUY−SELL (taker) del favorito en los 30s previos (cinta, muestreada → ruidosa)
-  · favask = a1 del favorito (control de precio)   · spot_mom = move spot 60s en bps (control)
+  ESTÁTICAS:  spread = a1−b1 · imb1 = bs1/(bs1+as1) · imb3 = Σbid/(Σbid+Σask) · micro = microprice−mid
+  DINÁMICAS:  d_imb1 = Δimb1 en 45s (¿se carga el bid del favorito?) · d_micro = Δmicro en 45s (¿sube presión?)
+  DÉBIL:      aflow = neto BUY−SELL (taker) del favorito en 30s (cinta muestreada → suele degenerar)
+  CONTROLES:  favask = a1 (precio, NO candidata) · spot_mom = move spot 60s en bps (NO candidata)
 
     python order_flow_mine.py
 Necesita lab/klines_1m_btc.csv (hist_backtest.py), lab/wtrades_*.csv (winners_deep.py) y lab/books_*.csv +
@@ -31,6 +31,10 @@ KL    = os.path.join(DIR, "klines_1m_btc.csv")
 FAV_LO, FAV_HI = 0.62, 0.95      # zona favorito (donde está el edge de los ganadores)
 MAXAGE  = 12                     # s: antigüedad máxima de un snapshot de libro para valer como "a la entrada"
 AFLOW_W = 30                     # s: ventana de flujo agresor previo
+DELTA   = 45                     # s: lookback para la DINÁMICA del libro (Δimbalance, Δmicroprice)
+MIN_BUCKET = 50                  # n mínimo por quintil para que una feature sea candidata (anti-artefacto)
+MIN_Z   = 3.0                    # z mínima (historial completo) para que una wallet cuente como GANADOR REAL.
+                                 # ~3σ. Separa limpio los reales (z 4-35) del ruido (w-8805 −0.4, w-8856 −2.7).
 # Puerta de potencia (pre-registrada): sin esto NO se emite veredicto.
 MIN_DAYS        = 28             # ~4 semanas de libro
 MIN_WIN_FILLS   = 300           # n de fills-favorito-de-ganadores con libro (power ~3pp @ p~.9)
@@ -115,20 +119,31 @@ def aflow(tape_idx, cid, favside, t):
         net += sz if bs == "BUY" else -sz
     return net
 
-def features(bk, bk_other, aflw, spot_mom):
-    """Features de order-flow del lado favorito. bk = levels favorito; bk_other = levels underdog."""
+def _imb_micro(bk):
+    """(imb1, microprice−mid) de un snapshot, o None. Reutilizable para el estado previo (dinámica)."""
+    if not bk: return None
     b1, bs1, a1, as1 = bk["b1"], bk["bs1"], bk["a1"], bk["as1"]
     if None in (b1, bs1, a1, as1) or (bs1 + as1) <= 0: return None
+    mid = (a1 + b1) / 2; micro = (a1 * bs1 + b1 * as1) / (bs1 + as1)
+    return bs1 / (bs1 + as1), micro - mid
+
+def features(bk, bk_other, aflw, spot_mom, bk_prior):
+    """Features de order-flow del lado favorito. bk = levels favorito; bk_prior = mismo lado DELTA s antes."""
+    im = _imb_micro(bk)
+    if im is None: return None
+    imb1, micro = im
+    b1, a1 = bk["b1"], bk["a1"]
     bids = [bk[k] for k in ("bs1","bs2","bs3") if bk[k]]
     asks = [bk[k] for k in ("as1","as2","as3") if bk[k]]
     sb, sa = sum(bids), sum(asks)
-    mid   = (a1 + b1) / 2
-    micro = (a1 * bs1 + b1 * as1) / (bs1 + as1)
+    im0 = _imb_micro(bk_prior)                       # dinámica: estado del libro DELTA s antes
     return {
         "spread":   round(a1 - b1, 4),
-        "imb1":     round(bs1 / (bs1 + as1), 4),
+        "imb1":     round(imb1, 4),
         "imb3":     round(sb / (sb + sa), 4) if (sb + sa) else None,
-        "micro":    round(micro - mid, 5),
+        "micro":    round(micro, 5),
+        "d_imb1":   round(imb1 - im0[0], 4) if im0 else None,      # ¿el bid del favorito se está cargando?
+        "d_micro":  round(micro - im0[1], 5) if im0 else None,     # ¿la presión de microprice sube?
         "favask":   round(a1, 4),
         "aflow":    aflw,
         "spot_mom": spot_mom,
@@ -142,19 +157,43 @@ def collect():
         o, c = kl.get(ws), kl.get(ws + 300)
         return ("Up" if c >= o else "Down") if (o is not None and c is not None) else None
 
-    # fills de ganadores (BUY, zona favorito) agrupados por día
+    # fills de ganadores (BUY, zona favorito) agrupados por día — SOLO wallets que superan MIN_Z.
+    # La z (ponderada por tamaño, historial completo) es la credencial de "ganador real": las wallets con
+    # z≈0 muestran +EV/share por banda (sesgo favorito-longshot gratis) pero NO ganan dinero → contaminan.
     wfiles = glob.glob(os.path.join(DIR, "wtrades_*.csv"))
     if not wfiles:
         print("faltan lab/wtrades_*.csv — corre antes: python3 winners_deep.py"); sys.exit(1)
     win_by_day = defaultdict(list)
+    pool = []
     for p in wfiles:
         who = os.path.basename(p)[8:-4]
-        for r in csv.DictReader(open(p, encoding="utf-8")):
+        rows = list(csv.DictReader(open(p, encoding="utf-8")))
+        pnl = var = nb = 0.0
+        for r in rows:                                    # z sobre TODAS las compras (ponderado por tamaño)
+            if r.get("side") != "BUY": continue
+            try: ws = int(r["slug"].split("-")[-1]); pr = float(r["price"]); sz = float(r["size"] or 0)
+            except Exception: continue
+            if not (0 < pr < 1) or sz <= 0: continue
+            wn = winner(ws)
+            if wn is None: continue
+            won = 1 if r.get("outcome") == wn else 0
+            pnl += sz * (won - pr); var += sz * sz * pr * (1 - pr); nb += 1
+        z = pnl / math.sqrt(var) if var > 0 else 0.0
+        keep = z >= MIN_Z
+        pool.append((who, z, int(nb), keep))
+        if not keep: continue
+        for r in rows:                                    # fills favorito de los que SÍ califican
             try: ws = int(r["slug"].split("-")[-1]); pr = float(r["price"])
             except Exception: continue
             if r.get("side") != "BUY" or not (FAV_LO <= pr <= FAV_HI): continue
             win_by_day[day_of(r["ts"])].append(
                 {"who": who, "ts": int(r["ts"]), "ws": ws, "cid": r.get("cid"), "out": r.get("outcome"), "pr": pr})
+    pool.sort(key=lambda x: -x[1])
+    print("POOL DE GANADORES (z sobre historial completo, ponderado por tamaño):")
+    for who, z, nb, keep in pool:
+        tag = "✓ incluido" if keep else f"✗ EXCLUIDO (z<{MIN_Z:g})"
+        print(f"   {who:<12} z {z:+7.2f}  n={nb:>6}  {tag}")
+    print(f"   → {sum(1 for x in pool if x[3])}/{len(pool)} wallets califican como ganadores reales (MIN_Z={MIN_Z:g})\n")
 
     book_days = sorted({os.path.basename(p).split("_")[1][:8] for p in glob.glob(os.path.join(DIR, "books_*.csv"))})
     if not book_days:
@@ -183,7 +222,8 @@ def collect():
             fav, bk, bko = fav_side(fl["cid"], fl["ts"])
             if fav is None or fav != fl["out"]:      # solo compras de FAVORITO confirmadas por libro
                 continue
-            ft = features(bk, bko, aflow(tidx, fl["cid"], fav, fl["ts"]), spot_mom_at(fl["ts"]))
+            prior = book_at(bidx, fl["cid"], fav, fl["ts"] - DELTA)
+            ft = features(bk, bko, aflow(tidx, fl["cid"], fav, fl["ts"]), spot_mom_at(fl["ts"]), prior)
             if ft is None: continue
             ft.update({"won": 1 if fl["out"] == wn else 0, "day": day, "who": fl["who"]})
             winner_rows.append(ft)
@@ -198,7 +238,8 @@ def collect():
                 if bs != "BUY" or not (FAV_LO <= pr <= FAV_HI): continue
                 fav, bk, bko = fav_side(cid, tt)
                 if fav is None or fav != out: continue
-                ft = features(bk, bko, aflow(tidx, cid, fav, tt), spot_mom_at(tt))
+                prior = book_at(bidx, cid, fav, tt - DELTA)
+                ft = features(bk, bko, aflow(tidx, cid, fav, tt), spot_mom_at(tt), prior)
                 if ft is None: continue
                 ft.update({"won": 1 if out == wn else 0, "day": day})
                 pop_rows.append(ft)
@@ -208,7 +249,10 @@ def collect():
 
 # ── análisis ─────────────────────────────────────────────────────────────────
 
-FEATS = ["spread", "imb1", "imb3", "micro", "aflow", "favask", "spot_mom"]
+# Order-flow REAL (candidatas a edge) vs CONTROLES (precio/momentum — para contraste, no candidatas).
+# aflow queda como order-flow pero la cinta muestreada suele degenerarla → la guarda anti-artefacto la filtra.
+ORDERFLOW = ["spread", "imb1", "imb3", "micro", "d_imb1", "d_micro", "aflow"]
+CONTROLS  = ["favask", "spot_mom"]
 
 def wr(seg):
     seg = [x for x in seg if x is not None]
@@ -223,19 +267,22 @@ def quintiles(rows, key):
 
 def split_by_feature(rows, key, label):
     q = quintiles(rows, key)
-    if not q:
-        print(f"    {key:<9} (pocos datos)"); return None
+    if not q or q[0] == q[-1]:
+        print(f"    {key:<9} (sin variación / pocos datos)"); return None
     edges = [(-1e18, q[0]), (q[0], q[1]), (q[1], q[2]), (q[2], q[3]), (q[3], 1e18)]
     names = ["Q1 bajo", "Q2", "Q3", "Q4", "Q5 alto"]
     print(f"    {key} ({label}):")
-    lifts = []
+    stats = []
     for (lo, hi), nm in zip(edges, names):
         s = wr([r["won"] for r in rows if r.get(key) is not None and lo <= r[key] < hi])
         if s: print(f"       {nm:<8} n={s[0]:>5}  win {s[1]:6.2%}  (IC {s[2]:.1%}-{s[3]:.1%})")
-        lifts.append(s[1] if s else None)
-    if lifts[0] is not None and lifts[-1] is not None:
-        return (lifts[-1] - lifts[0]) * 100    # lift Q5−Q1 en pp
-    return None
+        stats.append(s)
+    # GUARDA ANTI-ARTEFACTO: ≥4 buckets con n≥MIN_BUCKET y extremos poblados (si no, distribución degenerada)
+    good = sum(1 for s in stats if s and s[0] >= MIN_BUCKET)
+    if good < 4 or not stats[0] or not stats[-1] or stats[0][0] < MIN_BUCKET or stats[-1][0] < MIN_BUCKET:
+        print(f"       ↳ distribución degenerada (buckets vacíos/minúsculos) → NO candidata")
+        return None
+    return (stats[-1][1] - stats[0][1]) * 100    # lift Q5−Q1 en pp
 
 def main():
     try: sys.stdout.reconfigure(encoding="utf-8")
@@ -276,16 +323,21 @@ def main():
         print("sin split train/test (1 solo día) — se analiza todo junto (PREVIEW)\n")
 
     print("─" * 92)
-    print("LIFT Q5−Q1 por feature en TRAIN (ganadores):")
+    print("LIFT Q5−Q1 por feature de ORDER-FLOW en TRAIN (ganadores):")
     print("─" * 92)
     train_lift = {}
-    for k in FEATS:
-        lift = split_by_feature(train, k, "ganadores/train")
+    for k in ORDERFLOW:
+        lift = split_by_feature(train, k, "gan/train")
         if lift is not None: train_lift[k] = lift
         print()
+    print("CONTROLES (NO son order-flow — favask=precio pagado, spot_mom=momentum; para contraste):")
+    for k in CONTROLS:
+        split_by_feature(train, k, "control"); print()
 
     if not train_lift:
-        print("sin features con datos suficientes en train."); return
+        print("Ninguna feature de order-flow con distribución válida y lift → nada que confirmar (todas planas o"
+              " degeneradas). Es el mismo resultado que en precio: la selección NO está en estas features.")
+        return
     best = max(train_lift, key=lambda k: abs(train_lift[k]))
     print("=" * 92)
     print(f"FEATURE CANDIDATA (mayor |lift| en train): {best}  ({train_lift[best]:+.2f}pp Q5−Q1)")
@@ -307,8 +359,9 @@ def main():
     print(f"· REPLICABLE si {best} da lift ≥3pp en TRAIN, mismo signo y ≥1.5pp en TEST, y el MONTÓN sube igual")
     print("  → regla: comprar el favorito solo cuando su order-flow está en el quintil bueno. Eso es EDGE nuevo.")
     print("· Si el lift NO generaliza a test o el montón NO lo confirma → es ruido/skill, no una regla replicable.")
-    print("· aflow viene de la cinta MUESTREADA (incompleta) → tómalo como señal débil; imb/micro/spread son del")
-    print("  libro directo (fiables). Con veredicto REAL: pasar la regla a favorite_paper como filtro y medir en vivo.")
+    print("· imb/micro/spread + d_imb1/d_micro salen del libro directo (fiables). aflow sale de la cinta muestreada")
+    print("  (incompleta) → señal débil, y la guarda anti-artefacto suele descartarla. Con veredicto REAL: pasar la")
+    print("  regla a favorite_paper como filtro y medir en vivo.")
     if not ready:
         print("\n⚠ RECORDATORIO: esto ha corrido en PREVIEW (potencia insuficiente). NO tomes los números como edge.")
 

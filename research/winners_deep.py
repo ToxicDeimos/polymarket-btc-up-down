@@ -22,6 +22,8 @@ from collections import defaultdict
 DIR   = os.path.join(os.path.dirname(__file__), "lab")
 KL    = os.path.join(DIR, "klines_1m_btc.csv")
 MIN_N = 50
+MIN_Z = 3.0   # z que separa un GANADOR REAL del ruido (~3σ). Debajo, el +EV/share por banda es solo el
+              # sesgo favorito-longshot del mercado, no habilidad (ej. w-8805 z−0.4, w-8856 z−2.7). = order_flow_mine.MIN_Z
 
 # Candidatos ganadores (originales + top-z de la cinta + top-z de survivorship). Fácil añadir más.
 CANDIDATES = {
@@ -132,7 +134,8 @@ def main():
     print("=" * 98)
     for z, name, addr, n, roi, scalp, hold, band in results:
         nw = scalp + hold
-        print(f"\n{name}  {addr}")
+        tag = "✓ GANADOR REAL" if z >= MIN_Z else f"✗ RUIDO (z<{MIN_Z:g} → el +EV/share por banda es solo el sesgo del mercado)"
+        print(f"\n{name}  {addr}   {tag}")
         print(f"  {n} compras COMPLETAS  ·  ROI {roi:+.1%}  ·  z {z:+.2f}  ·  "
               f"SCALP {scalp*100//nw if nw else 0}% / HOLD {hold*100//nw if nw else 0}%")
         if band:
