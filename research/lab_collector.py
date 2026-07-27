@@ -5,27 +5,40 @@ Registra EN VIVO lo que el historial de trades no guarda (la dimensión que mat�
 reconstrucciones anteriores): el estado del LIBRO alrededor de cada fill.
 
 Escribe CSVs diarios en research/lab/ (gitignored):
-  books_YYYYMMDD.csv : top-3 niveles bid/ask (+tamaños) de ambos lados de las ventanas BTC
-                       5m/15m ACTIVAS, cada ~5s
-  spot_YYYYMMDD.csv  : BTC spot Binance, cada ~5s
-  fills_YYYYMMDD.csv : trades de las wallets GANADORAS en btc-updown, cada ~20s
-  tape_YYYYMMDD.csv  : cinta completa de trades btc-updown (todas las wallets), cada ~20s
+  books_YYYYMMDD.csv    : top-3 niveles bid/ask (+tamaños) de ambos lados de las ventanas BTC
+                          5m/15m ACTIVAS, cada ~5s
+  bookdepth_YYYYMMDD.csv: PROFUNDIDAD del libro COMPLETO (no solo top-3): nº de niveles, tamaño total
+                          bid/ask, tamaño dentro de 2¢ del tope, imbalance de todo el libro; cada ~5s
+  spot_YYYYMMDD.csv     : BTC spot Binance, cada ~5s
+  fills_YYYYMMDD.csv    : trades de las wallets GANADORAS en btc-updown, cada ~20s
+  tape_YYYYMMDD.csv     : cinta muestreada global de btc-updown (todas las wallets), cada ~20s
+  wintrades_YYYYMMDD.csv: cinta COMPLETA por ventana activa (filtro market=cid) → aggressor flow real
+                          (la global muestreada perdía trades y degeneraba el aflow del minero); cada ~10s
 
-Correr 24/7 (systemd lab-collector.service). Autónomo (stdlib). ~15-20 MB/día.
+Correr 24/7 (systemd lab-collector.service). Autónomo (stdlib). ~20-30 MB/día.
+Los flujos nuevos (bookdepth/wintrades) son ADITIVOS: no tocan books_/tape_ ya grabados. Al reiniciar el
+servicio empiezan a acumular desde cero; la data previa sigue válida (esquema de books_/tape_ intacto).
     python lab_collector.py            # loop infinito
-    python lab_collector.py --once     # un ciclo y salir (smoke test)
+    python lab_collector.py --once     # un ciclo y salir (smoke test: imprime conteos de los flujos nuevos)
 """
 import urllib.request, json, time, csv, os, sys
 
-POLL  = 5     # s: libros + spot
-WPOLL = 20    # s: fills de ganadores + cinta
+POLL   = 5     # s: libros + spot
+WPOLL  = 20    # s: fills de ganadores + cinta global muestreada
+WT_POLL = 10   # s: cinta COMPLETA por ventana (aggressor flow)
 DIR = os.path.join(os.path.dirname(__file__), "lab")
 WALLETS = {
     "izzyaussie":  "0x94f471f68396ff4a3cab8cb5c47c86274b8b77a2",
     "13mm-wrench": "0x57f2faf2eb75fd26bce0b5baf5ee7ffaadd66356",
     "zmbabwe":     "0xdfd4ab76f0c86c6dd913d60ccceaff4eaac591f7",
+    # + los 3 grandes confirmados por z (winners_deep) — para tener también sus fills en vivo
+    "w-f3a6":      "0xf3a6ef82d0904db48c0ad8016ca62c556fee8c6c",
+    "w-9a2f":      "0x9a2f9100cd8accb9bb8ab1e3e025b042c0d5c62b",
+    "w-0445":      "0x04454d6a686c5909724dc6a27555875eb86ebbf9",
 }
 BH = ["ts","slug","cid","side","b1","bs1","b2","bs2","b3","bs3","a1","as1","a2","as2","a3","as3","last"]
+BAH = ["ts","slug","cid","side","nb","na","bdepth","adepth","bdepth2c","adepth2c","fullimb"]
+WTH = ["ts_seen","cid","slug","ts_trade","trade_side","outcome","price","size","tx"]
 SH = ["ts","price"]
 CH = ["ts","price","updated_at"]
 # Chainlink BTC/USD on-chain (Polygon) — proxy del Data Stream con el que RESUELVE Polymarket.
@@ -87,13 +100,44 @@ def snap_books():
         for side in ("Up","Down"):
             b=get(f"https://clob.polymarket.com/book?token_id={wn['toks'][side]}")
             if not isinstance(b,dict): continue
-            bids=sorted(((float(x["price"]),float(x["size"])) for x in b.get("bids",[])), reverse=True)[:3]
-            asks=sorted(((float(x["price"]),float(x["size"])) for x in b.get("asks",[])))[:3]
+            rawb=[(float(x["price"]),float(x["size"])) for x in b.get("bids",[])]
+            rawa=[(float(x["price"]),float(x["size"])) for x in b.get("asks",[])]
+            bids=sorted(rawb, reverse=True)[:3]
+            asks=sorted(rawa)[:3]
             row=[ts,wn["slug"],wn["cid"],side]
             for i in range(3): row += list(bids[i]) if i<len(bids) else ["",""]
             for i in range(3): row += list(asks[i]) if i<len(asks) else ["",""]
             row.append(b.get("last_trade_price") or "")
             w("books",BH,row)
+            # PROFUNDIDAD del libro COMPLETO (no solo top-3): agregados que el top-3 no captura.
+            if rawb or rawa:
+                bb=max(p for p,_ in rawb) if rawb else None
+                ba=min(p for p,_ in rawa) if rawa else None
+                bdepth=sum(s for _,s in rawb); adepth=sum(s for _,s in rawa)
+                bd2=sum(s for p,s in rawb if bb is not None and p>=bb-0.02)   # tamaño a ≤2¢ del tope bid
+                ad2=sum(s for p,s in rawa if ba is not None and p<=ba+0.02)   # tamaño a ≤2¢ del tope ask
+                fullimb=round(bdepth/(bdepth+adepth),4) if (bdepth+adepth)>0 else ""
+                w("bookdepth",BAH,[ts,wn["slug"],wn["cid"],side,len(rawb),len(rawa),
+                                   round(bdepth,2),round(adepth,2),round(bd2,2),round(ad2,2),fullimb])
+
+_seen_wt=set()
+def snap_wintrades():
+    """Cinta COMPLETA por ventana ACTIVA (filtro market=cid) → aggressor flow real. La cinta global
+    (limit200/20s) muestrea y pierde trades: por eso el aflow del minero salía degenerado. Aquí, por
+    cada ventana viva, se piden sus trades y se deduplica → registro completo del flujo agresor."""
+    global _seen_wt
+    nnew=0; ts=now()
+    for wn in list(windows.values()):
+        d=get(f"https://data-api.polymarket.com/trades?market={wn['cid']}&limit=100")
+        for x in (d or []):
+            h=(x.get("transactionHash",""), x.get("timestamp"), x.get("price"), x.get("outcome"), x.get("side"))
+            if h in _seen_wt: continue
+            _seen_wt.add(h); nnew+=1
+            w("wintrades",WTH,[ts,wn["cid"],wn["slug"],x.get("timestamp"),x.get("side"),
+                               x.get("outcome"),x.get("price"),x.get("size"),x.get("transactionHash")])
+        time.sleep(0.05)
+    if len(_seen_wt)>40000: _seen_wt=set(list(_seen_wt)[-15000:])
+    return nnew
 
 def snap_spot():
     d=get("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT")
@@ -150,7 +194,7 @@ def main():
     os.makedirs(DIR, exist_ok=True)
     once = "--once" in sys.argv
     print("="*60+"\n  LAB COLLECTOR — books + spot + fills ganadores + tape\n"+"="*60)
-    last_w=0
+    last_w=0; last_wt=0
     while True:
         try:
             if now()-last_w >= WPOLL:
@@ -159,8 +203,12 @@ def main():
             snap_books()
             snap_spot()
             snap_chainlink()
+            nwt=None
+            if once or now()-last_wt >= WT_POLL:
+                nwt=snap_wintrades(); last_wt=now()
             if once:
-                print("ciclo único OK"); break
+                print(f"ciclo único OK · {len(windows)} ventanas activas · {nwt} wintrades nuevos "
+                      f"(si es 0, revisar el endpoint market=cid)"); break
             time.sleep(POLL)
         except KeyboardInterrupt:
             print("\nparado."); break

@@ -10,11 +10,16 @@ con el estado del LIBRO a la entrada, y busca qué feature de order-flow separa 
 montón. Con disciplina: puerta de potencia (no concluye sin datos), train/test por día, y línea base de
 población (¿el favorito del montón también gana más ahí? = replicable, no skill).
 
-Features de order-flow a la entrada (lado del favorito, desde el top-3 del libro + cinta):
+Features de order-flow a la entrada (lado del favorito, desde el libro + cinta):
   ESTÁTICAS:  spread = a1−b1 · imb1 = bs1/(bs1+as1) · imb3 = Σbid/(Σbid+Σask) · micro = microprice−mid
   DINÁMICAS:  d_imb1 = Δimb1 en 45s (¿se carga el bid del favorito?) · d_micro = Δmicro en 45s (¿sube presión?)
-  DÉBIL:      aflow = neto BUY−SELL (taker) del favorito en 30s (cinta muestreada → suele degenerar)
+  PROFUNDIDAD (colector ampliado): fullimb = imbalance del libro COMPLETO · depth2 = share bid a ≤2¢ del tope
+              · d_fullimb = Δfullimb en 45s
+  FLUJO:      caflow = aggressor flow COMPLETO (BUY−SELL del favorito en 30s, cinta por-ventana, fiable) ·
+              aflow = idem pero de la cinta global muestreada (débil, suele degenerar)
   CONTROLES:  favask = a1 (precio, NO candidata) · spot_mom = move spot 60s en bps (NO candidata)
+  NOTA: fullimb/depth2/d_fullimb/caflow salen de los flujos nuevos (bookdepth_/wintrades_) → None en los
+        días anteriores a la ampliación del colector; empiezan a tener señal cuando acumulen ~semanas.
 
     python order_flow_mine.py
 Necesita lab/klines_1m_btc.csv (hist_backtest.py), lab/wtrades_*.csv (winners_deep.py) y lab/books_*.csv +
@@ -119,6 +124,67 @@ def aflow(tape_idx, cid, favside, t):
         net += sz if bs == "BUY" else -sz
     return net
 
+# ── flujos NUEVOS del colector ampliado (profundidad completa + cinta completa) ───────────────
+# Vacíos para los días previos a la ampliación → sus features salen None y la guarda las ignora.
+
+def load_bookdepth_day(day):
+    """(cid, side) -> [(ts, {fullimb, bd2, ad2, bdepth, adepth})]  — profundidad del libro completo."""
+    idx = defaultdict(list)
+    p = os.path.join(DIR, f"bookdepth_{day}.csv")
+    if not os.path.exists(p): return idx
+    for r in csv.DictReader(open(p, encoding="utf-8")):
+        try: ts = int(r["ts"])
+        except Exception: continue
+        idx[(r.get("cid"), r.get("side"))].append((ts, {
+            "fullimb": _f(r.get("fullimb")), "bd2": _f(r.get("bdepth2c")), "ad2": _f(r.get("adepth2c")),
+            "bdepth": _f(r.get("bdepth")), "adepth": _f(r.get("adepth"))}))
+    for k in idx: idx[k].sort(key=lambda x: x[0])
+    return idx
+
+def bookdepth_at(idx, cid, side, t):
+    arr = idx.get((cid, side))
+    if not arr: return None
+    i = bisect.bisect_right([x[0] for x in arr], t) - 1
+    return arr[i][1] if i >= 0 and t - arr[i][0] <= MAXAGE else None
+
+def load_wintrades_day(day):
+    """(cid, outcome) -> [(ts_trade, trade_side, size)]  — cinta COMPLETA por ventana (aggressor flow real)."""
+    idx = defaultdict(list)
+    p = os.path.join(DIR, f"wintrades_{day}.csv")
+    if not os.path.exists(p): return idx
+    for r in csv.DictReader(open(p, encoding="utf-8")):
+        try: tt = int(r["ts_trade"]); sz = float(r["size"])
+        except Exception: continue
+        idx[(r.get("cid"), r.get("outcome"))].append((tt, r.get("trade_side"), sz))
+    for k in idx: idx[k].sort(key=lambda x: x[0])
+    return idx
+
+def caflow(idx, cid, favside, t):
+    """Aggressor flow COMPLETO: neto BUY−SELL del favorito en [t−AFLOW_W, t] desde wintrades. None si no hay."""
+    arr = idx.get((cid, favside))
+    if not arr: return None
+    net = 0.0; seen = False
+    for tt, bs, sz in arr:
+        if tt < t - AFLOW_W: continue
+        if tt > t: break
+        seen = True; net += sz if bs == "BUY" else -sz
+    return net if seen else None
+
+def micro_extra(ft, bdidx, wtidx, cid, fav, t):
+    """Añade a ft las features de los flujos nuevos (profundidad + aggressor flow completo). None si faltan."""
+    bd = bookdepth_at(bdidx, cid, fav, t)
+    if bd:
+        ft["fullimb"] = bd["fullimb"]
+        tot = (bd["bd2"] or 0) + (bd["ad2"] or 0)
+        ft["depth2"] = round((bd["bd2"] or 0) / tot, 4) if tot > 0 else None
+        bd0 = bookdepth_at(bdidx, cid, fav, t - DELTA)
+        ft["d_fullimb"] = (round(bd["fullimb"] - bd0["fullimb"], 4)
+                           if (bd0 and bd["fullimb"] is not None and bd0.get("fullimb") is not None) else None)
+    else:
+        ft["fullimb"] = ft["depth2"] = ft["d_fullimb"] = None
+    ft["caflow"] = caflow(wtidx, cid, fav, t)
+    return ft
+
 def _imb_micro(bk):
     """(imb1, microprice−mid) de un snapshot, o None. Reutilizable para el estado previo (dinámica)."""
     if not bk: return None
@@ -204,6 +270,8 @@ def collect():
         bidx = load_books_day(day)
         tidx, cid_ws = load_tape_day(day)
         sks, svs = load_spot_day(day)
+        bdidx = load_bookdepth_day(day)      # profundidad completa (vacío en días previos a la ampliación)
+        wtidx = load_wintrades_day(day)      # cinta completa por ventana (idem)
         if not bidx: continue
 
         def fav_side(cid, t):
@@ -225,6 +293,7 @@ def collect():
             prior = book_at(bidx, fl["cid"], fav, fl["ts"] - DELTA)
             ft = features(bk, bko, aflow(tidx, fl["cid"], fav, fl["ts"]), spot_mom_at(fl["ts"]), prior)
             if ft is None: continue
+            micro_extra(ft, bdidx, wtidx, fl["cid"], fav, fl["ts"])
             ft.update({"won": 1 if fl["out"] == wn else 0, "day": day, "who": fl["who"]})
             winner_rows.append(ft)
 
@@ -241,6 +310,7 @@ def collect():
                 prior = book_at(bidx, cid, fav, tt - DELTA)
                 ft = features(bk, bko, aflow(tidx, cid, fav, tt), spot_mom_at(tt), prior)
                 if ft is None: continue
+                micro_extra(ft, bdidx, wtidx, cid, fav, tt)
                 ft.update({"won": 1 if out == wn else 0, "day": day})
                 pop_rows.append(ft)
         del bidx, tidx
@@ -251,7 +321,8 @@ def collect():
 
 # Order-flow REAL (candidatas a edge) vs CONTROLES (precio/momentum — para contraste, no candidatas).
 # aflow queda como order-flow pero la cinta muestreada suele degenerarla → la guarda anti-artefacto la filtra.
-ORDERFLOW = ["spread", "imb1", "imb3", "micro", "d_imb1", "d_micro", "aflow"]
+ORDERFLOW = ["spread", "imb1", "imb3", "micro", "d_imb1", "d_micro", "aflow",
+             "fullimb", "d_fullimb", "depth2", "caflow"]   # los 4 últimos = flujos nuevos (desde la ampliación)
 CONTROLS  = ["favask", "spot_mom"]
 
 def wr(seg):
