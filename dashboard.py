@@ -12,7 +12,6 @@ from flask import Flask, jsonify, render_template, redirect
 app = Flask(__name__)
 
 BASE = os.path.dirname(__file__)
-MAKER3_FILE   = os.path.join(BASE, "research", "maker3_paper_log.csv")
 FAVORITE_FILE = os.path.join(BASE, "research", "favorite_paper_log.csv")
 
 
@@ -21,74 +20,6 @@ FAVORITE_FILE = os.path.join(BASE, "research", "favorite_paper_log.csv")
 @app.route("/")
 def index():
     return redirect("/favorite")
-
-
-def _m3_stats(rows):
-    """EDGE del early-rester = win − target (el precio fijo del bid descansando)."""
-    n = len(rows)
-    if n == 0:
-        return None
-    wins = sum(1 for r in rows if r.get("won") == "1")
-    tgts = [float(r["target"]) for r in rows if r.get("target")]
-    wr = wins / n
-    tg = statistics.mean(tgts) if tgts else 0.35
-    se = math.sqrt(wr * (1 - wr) / n)
-    return {"n": n, "win_rate": round(wr * 100, 1),
-            "ci_lo": round(max(0, wr - 1.96 * se) * 100, 1),
-            "ci_hi": round(min(1, wr + 1.96 * se) * 100, 1),
-            "target": round(tg * 100, 1), "edge": round((wr - tg) * 100, 2),
-            "rel": round((wr - tg) / tg * 100, 1) if tg else 0.0}
-
-
-@app.route("/maker3")
-def maker3():
-    return render_template("maker3.html")
-
-
-@app.route("/api/maker3")
-def api_maker3():
-    rows = _read_csv(MAKER3_FILE)
-    if not rows:
-        return jsonify({"summary": {"n": 0}, "trades": []})
-    from collections import Counter
-    st = Counter(r.get("status", "") for r in rows)
-    filled = [r for r in rows if r.get("status") == "filled"]
-    F = [r for r in filled if r.get("won") in ("0", "1")]
-    pending = len(filled) - len(F)
-    fillrate = round(len(filled) / len(rows) * 100, 1) if rows else 0.0
-    overall = _m3_stats(F)
-    by_phase = {lab: _m3_stats([r for r in F if r.get("fill_phase") and lo <= int(r["fill_phase"]) < hi])
-                for lo, hi, lab in [(0, 60, "0-60s"), (60, 120, "60-120s"),
-                                    (120, 195, "120-195s"), (195, 300, "195-300s")]}
-    MIN_VERDICT = 40
-    if overall is None or overall["n"] < MIN_VERDICT:
-        verdict = ("wait", f"{overall['n'] if overall else 0}/{MIN_VERDICT} fills — sin veredicto. "
-                   f"(maker2 posteando tarde dio −6.5pp; aquí llegamos temprano)")
-    elif overall["edge"] > 0:
-        if overall["ci_lo"] > overall["target"]:
-            verdict = ("real", f"EDGE +{overall['edge']}pp SIGNIFICATIVO llegando temprano (win {overall['win_rate']}% "
-                       f"> target {overall['target']}%, n={overall['n']}) → el maker SÍ se alcanza desde una Pi. "
-                       f"maker2 fallaba por postear TARDE.")
-        else:
-            verdict = ("maybe", f"EDGE +{overall['edge']}pp positivo pero no significativo aún "
-                       f"(n={overall['n']}, IC {overall['ci_lo']}-{overall['ci_hi']}%). Seguir.")
-    else:
-        verdict = ("dead", f"win {overall['win_rate']}% ≤ target {overall['target']}%: llegar temprano tampoco "
-                   f"captura el edge → hay velocidad de por medio que una Pi no vence. Negativo legítimo.")
-
-    def trade(r):
-        return {"ws": int(r["ws"]), "slug": r.get("slug"), "side": r.get("side"),
-                "target": r.get("target"), "fill_phase": r.get("fill_phase"),
-                "status": r.get("status"), "winner": r.get("winner"), "won": r.get("won")}
-    shown = [r for r in rows if r.get("status") in ("filled", "no_fill")][-80:][::-1]
-
-    return jsonify({
-        "summary": {"n": len(rows), "status": dict(st), "filled": len(filled),
-                    "resolved": len(F), "pending": pending, "fillrate": fillrate,
-                    "overall": overall, "by_phase": by_phase,
-                    "verdict": {"kind": verdict[0], "text": verdict[1]}},
-        "trades": [trade(r) for r in shown],
-    })
 
 
 def _fav_stats(rows):
