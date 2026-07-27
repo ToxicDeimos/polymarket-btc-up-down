@@ -285,6 +285,21 @@ def api_favorite():
         verdict = ("dead", f"win {overall['win_rate']}% ≤ ask {overall['ask']}% con n≥{MIN_VERDICT}: el "
                    f"favorito no bate su precio en vivo. Documentar y cerrar.")
 
+    # Curva de equity ILUSTRATIVA: $1 plano vs ¼-Kelly compuesto, sobre los MISMOS fills en orden.
+    # Kelly dimensiona con el edge ROBUSTO del backtest (+0.84pp), no el ruidoso en vivo. Ambas de $100.
+    KELLY_EDGE, KELLY_FRAC, BR0 = 0.0084, 0.25, 100.0
+    res_sorted = sorted(B, key=lambda r: int(r["ws"]))
+    eq = {"labels": [], "flat": [], "kelly": []}
+    flat = kelly = BR0
+    for i, r in enumerate(res_sorted, 1):
+        a = float(r["ask"]); won = r.get("won") == "1"
+        flat += (1 / a - 1) if won else -1                       # stake fijo de $1
+        f = min(KELLY_FRAC * KELLY_EDGE / (1 - a), 0.25)         # fracción del bankroll (cap 25%)
+        kelly *= (1 + f * (1 / a - 1)) if won else (1 - f)
+        eq["labels"].append(i)
+        eq["flat"].append(round(flat, 2))
+        eq["kelly"].append(round(kelly, 2))
+
     def trade(r):
         return {"ws": int(r["ws"]), "slug": r.get("slug"), "fav": r.get("fav"),
                 "ask": r.get("ask"), "ask2": r.get("ask2"), "status": r.get("status"),
@@ -297,6 +312,7 @@ def api_favorite():
                     "overall": overall, "by_band": by_band, "shadow": shadow,
                     "verdict": {"kind": verdict[0], "text": verdict[1]}},
         "trades": [trade(r) for r in shown],
+        "equity": eq,
     })
 
 

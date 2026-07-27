@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Favorite Paper Bot (DRY)</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <style>
   :root{--bg:#0d1117;--card:#161b22;--border:#30363d;--green:#3fb950;--red:#f85149;
         --yellow:#d29922;--blue:#58a6ff;--purple:#bc8cff;--text:#e6edf3;--muted:#8b949e;}
@@ -77,6 +78,22 @@
 
 <div class="section">
   <div class="card">
+    <h2>Curva de equity — $1 plano vs ¼-Kelly (compuesto) · ilustrativa</h2>
+    <div style="height:280px"><canvas id="eq-chart"></canvas></div>
+    <div class="sub" style="margin-top:8px">
+      Ambas parten de <b>$100</b> sobre los MISMOS fills. <span class="blue">$1 plano</span> = apuesta fija →
+      línea recta. <span class="green">¼-Kelly</span> = apuesta ¼·edge/(1−ask) del bankroll (edge <b>robusto</b>
+      +0.84pp, no el de en vivo) → compone. <b>A este n casi se solapan</b>: con un edge tan fino la ventaja de
+      componer es minúscula y solo se despega tras MILES de fills. Proyección EV con el edge robusto (~3000
+      ventanas ≈ 10 días): plano ~$128 vs ¼-Kelly ~$158 — crece, pero <b>despacio</b>, y la <b>capacidad</b>
+      (liquidez 5m) lo frena antes. La palanca para escalar NO es el sizing: es <b>más edge</b> (selección
+      order-flow) y <b>más amplitud</b> (más ventanas/mercados). Ilustrativa; edge sin confirmar hasta 400 fills.
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="card">
     <h2>Últimas ventanas</h2>
     <table>
       <thead><tr><th>ventana (ET)</th><th>favorito</th><th>ask (pagado)</th><th>underdog</th><th>estado</th><th>ganó</th></tr></thead>
@@ -92,6 +109,17 @@
 
 <script>
 const $=id=>document.getElementById(id);
+const eqChart=new Chart(document.getElementById('eq-chart').getContext('2d'),{
+  type:'line',
+  data:{labels:[],datasets:[
+    {label:'¼-Kelly (compuesto)',data:[],borderColor:'#3fb950',tension:.15,pointRadius:0,borderWidth:2},
+    {label:'$1 plano',           data:[],borderColor:'#58a6ff',tension:.15,pointRadius:0,borderWidth:2},
+  ]},
+  options:{responsive:true,maintainAspectRatio:false,
+    plugins:{legend:{labels:{color:'#8b949e'}}},
+    scales:{y:{grid:{color:'#21262d'},ticks:{color:'#8b949e'},title:{display:true,text:'bankroll ($, desde 100)',color:'#8b949e'}},
+            x:{grid:{color:'#21262d'},ticks:{color:'#8b949e',maxTicksLimit:10},title:{display:true,text:'nº de compra resuelta',color:'#8b949e'}}}}
+});
 function etRange(ws){
   const a=new Date(ws*1000), b=new Date((ws+300)*1000);
   const f=d=>d.toLocaleTimeString('en-US',{timeZone:'America/New_York',hour:'2-digit',minute:'2-digit',hour12:false});
@@ -130,6 +158,13 @@ async function refresh(){
       $('k-prog').textContent=`${Math.min(o.n,400)}/400`;
     } else {$('k-wr').textContent='—';$('k-edge').textContent='—';$('k-pnl').textContent='—';$('k-prog').textContent='0/400';}
     $('verdict').className=`verdict ${s.verdict.kind}`; $('verdict').textContent=s.verdict.text;
+
+    if(d.equity){
+      eqChart.data.labels=d.equity.labels;
+      eqChart.data.datasets[0].data=d.equity.kelly;
+      eqChart.data.datasets[1].data=d.equity.flat;
+      eqChart.update('none');
+    }
 
     let zr=`<tr><td><b>TODO (82-95¢)</b></td>${stat(o)}</tr>`;
     const bb=s.by_band||{};
