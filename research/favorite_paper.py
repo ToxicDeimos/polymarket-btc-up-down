@@ -136,7 +136,7 @@ def analyze():
         print("  (aún sin fills resueltos)"); return
     print("\nEDGE (comprar favorito 82-95¢, aguantar — win vs ask; ref backtest +0.84pp, generaliza):")
     rep("TODO (82-95¢)", B)
-    for lo, hi, lab in [(0.82, 0.90, "82-90¢"), (0.90, 0.95, "90-95¢")]:
+    for lo, hi, lab in [(0.82, 0.90, "82-90¢"), (0.90, 0.9501, "90-95¢")]:   # 0.9501: incluye el techo 0.95
         rep(lab, [r for r in B if lo <= float(r["ask"]) < hi])
 
     # SOMBRA: los skips resueltos (72-82 y 95-99) — qué habrían dado, sin operar
