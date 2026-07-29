@@ -393,7 +393,11 @@ def split_by_feature(rows, key, label):
     if good < 4 or not stats[0] or not stats[-1] or stats[0][0] < MIN_BUCKET or stats[-1][0] < MIN_BUCKET:
         print(f"       ↳ distribución degenerada (buckets vacíos/minúsculos) → NO candidata")
         return None
-    return (stats[-1][1] - stats[0][1]) * 100    # lift Q5−Q1 en pp
+    lift = (stats[-1][1] - stats[0][1]) * 100                     # lift Q5−Q1 en pp
+    wins = [s[1] for s in stats]; tol = 0.005                     # monotonía (tolerancia 0.5pp por ruido)
+    mono = sum(1 if wins[i+1]-wins[i] > tol else (-1 if wins[i+1]-wins[i] < -tol else 0) for i in range(4))
+    print(f"       ↳ lift Q5−Q1 {lift:+.2f}pp · monotonía {mono:+d}/4" + ("  ← MONÓTONA" if abs(mono) >= 3 else ""))
+    return (lift, mono)
 
 def main():
     try: sys.stdout.reconfigure(encoding="utf-8")
@@ -449,26 +453,29 @@ def main():
         print("Ninguna feature de order-flow con distribución válida y lift → nada que confirmar (todas planas o"
               " degeneradas). Es el mismo resultado que en precio: la selección NO está en estas features.")
         return
-    best = max(train_lift, key=lambda k: abs(train_lift[k]))
+    # RANKING: prioriza MONOTONÍA (|mono|≥3, señal creíble) y luego |lift|. Confirma el TOP-3, no solo la máxima
+    # (una feature monótona modesta es más creíble que un |lift| grande con un outlier de por medio).
+    ranked = sorted(train_lift, key=lambda k: (abs(train_lift[k][1]) >= 3, abs(train_lift[k][0])), reverse=True)
+    topk = ranked[:3]
     print("=" * 92)
-    print(f"FEATURE CANDIDATA (mayor |lift| en train): {best}  ({train_lift[best]:+.2f}pp Q5−Q1)")
+    print("CANDIDATAS top-3 (monotonía primero, luego |lift|):  "
+          + " | ".join(f"{k} {train_lift[k][0]:+.1f}pp mono{train_lift[k][1]:+d}" for k in topk))
     print("=" * 92)
-
-    # confirmación en TEST (mismo signo) + POBLACIÓN (¿el montón también sube ahí? = replicable)
-    if test:
-        print("\nConfirmación en TEST (mismo corte de quintiles del feature candidato):")
-        test_lift = split_by_feature(test, best, "ganadores/test")
-        print(f"\n  lift TEST de {best}: {test_lift:+.2f}pp"
-              if test_lift is not None else "\n  (test sin datos suficientes)")
-    if pop_rows:
-        print("\nLÍNEA BASE POBLACIÓN — el favorito del MONTÓN por el mismo feature (¿replicable?):")
-        pop_lift = split_by_feature(pop_rows, best, "montón")
+    for best in topk:
+        print(f"\n── {best}  (train {train_lift[best][0]:+.2f}pp, mono {train_lift[best][1]:+d}/4)  → confirmación:")
+        if test:
+            tr = split_by_feature(test, best, f"{best}/TEST")
+            print(f"   lift TEST {tr[0]:+.2f}pp (mono {tr[1]:+d})" if tr else "   (test sin datos)")
+        if pop_rows:
+            pr = split_by_feature(pop_rows, best, f"{best}/MONTÓN")
+            print(f"   lift MONTÓN {pr[0]:+.2f}pp (mono {pr[1]:+d})" if pr else "   (montón sin datos)")
+    best = topk[0]
 
     print("\n" + "=" * 92)
     print("CÓMO LEER (pre-registrado)")
     print("=" * 92)
-    print(f"· REPLICABLE si {best} da lift ≥3pp en TRAIN, mismo signo y ≥1.5pp en TEST, y el MONTÓN sube igual")
-    print("  → regla: comprar el favorito solo cuando su order-flow está en el quintil bueno. Eso es EDGE nuevo.")
+    print("· REPLICABLE si una candidata da lift ≥3pp y MONÓTONA en TRAIN, mismo signo y ≥1.5pp en TEST, y el")
+    print("  MONTÓN sube igual → comprar el favorito solo en el quintil bueno = EDGE nuevo.")
     print("· Si el lift NO generaliza a test o el montón NO lo confirma → es ruido/skill, no una regla replicable.")
     print("· imb/micro/spread + d_imb1/d_micro salen del libro directo (fiables). aflow sale de la cinta muestreada")
     print("  (incompleta) → señal débil, y la guarda anti-artefacto suele descartarla. Con veredicto REAL: pasar la")
