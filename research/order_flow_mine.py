@@ -17,6 +17,10 @@ Features de order-flow a la entrada (lado del favorito, desde el libro + cinta):
               · d_fullimb = Δfullimb en 45s
   FLUJO:      caflow = aggressor flow COMPLETO (BUY−SELL del favorito en 30s, cinta por-ventana, fiable) ·
               aflow = idem pero de la cinta global muestreada (débil, suele degenerar)
+  ORÁCULO:    cl_tail = divergencia Binance−Chainlink a la entrada, CON SIGNO a favor del favorito. Polymarket
+              RESUELVE con Chainlink (lag ~30s); si Binance ya se movió y Chainlink va a recuperar en la
+              dirección del favorito → viento a favor (>0). Feature principista (fuente de precio ≠ de
+              resolución) y con historial DESDE EL DÍA 1 (no espera a los flujos nuevos).
   CONTROLES:  favask = a1 (precio, NO candidata) · spot_mom = move spot 60s en bps (NO candidata)
   NOTA: fullimb/depth2/d_fullimb/caflow salen de los flujos nuevos (bookdepth_/wintrades_) → None en los
         días anteriores a la ampliación del colector; empiezan a tener señal cuando acumulen ~semanas.
@@ -102,6 +106,15 @@ def load_tape_day(day):
 
 def load_spot_day(day):
     p = os.path.join(DIR, f"spot_{day}.csv"); ks = []; vs = []
+    if not os.path.exists(p): return ks, vs
+    for r in csv.DictReader(open(p, encoding="utf-8")):
+        try: ks.append(int(r["ts"])); vs.append(float(r["price"]))
+        except Exception: pass
+    return ks, vs
+
+def load_chainlink_day(day):
+    """Chainlink BTC/USD (la fuente con la que RESUELVE Polymarket). Cadencia ~30s, va con lag vs Binance."""
+    p = os.path.join(DIR, f"chainlink_{day}.csv"); ks = []; vs = []
     if not os.path.exists(p): return ks, vs
     for r in csv.DictReader(open(p, encoding="utf-8")):
         try: ks.append(int(r["ts"])); vs.append(float(r["price"]))
@@ -272,6 +285,7 @@ def collect():
         sks, svs = load_spot_day(day)
         bdidx = load_bookdepth_day(day)      # profundidad completa (vacío en días previos a la ampliación)
         wtidx = load_wintrades_day(day)      # cinta completa por ventana (idem)
+        clks, clvs = load_chainlink_day(day) # oráculo de resolución (Chainlink) para la divergencia
         if not bidx: continue
 
         def fav_side(cid, t):
@@ -282,6 +296,15 @@ def collect():
         def spot_mom_at(t):
             s0, s1 = spot_at(sks, svs, t - 60), spot_at(sks, svs, t)
             return round((s1 - s0) / s0 * 10000, 2) if (s0 and s1) else None
+
+        def cl_tail_at(t, fav):
+            # divergencia Binance−Chainlink a la entrada, CON SIGNO a favor del favorito.
+            # Polymarket resuelve con Chainlink (lag ~30s); si Binance ya se movió y Chainlink va a
+            # "recuperar" en la dirección del favorito → VIENTO A FAVOR (>0). En contra → <0.
+            sp = spot_at(sks, svs, t); cl = spot_at(clks, clvs, t, 45)
+            if not sp or not cl: return None
+            lag = sp - cl                      # >0: Binance por encima de Chainlink → Chainlink subirá
+            return round(lag if fav == "Up" else -lag, 2)
 
         # ganadores de ese día
         for fl in win_by_day.get(day, []):
@@ -294,6 +317,7 @@ def collect():
             ft = features(bk, bko, aflow(tidx, fl["cid"], fav, fl["ts"]), spot_mom_at(fl["ts"]), prior)
             if ft is None: continue
             micro_extra(ft, bdidx, wtidx, fl["cid"], fav, fl["ts"])
+            ft["cl_tail"] = cl_tail_at(fl["ts"], fav)
             ft.update({"won": 1 if fl["out"] == wn else 0, "day": day, "who": fl["who"]})
             winner_rows.append(ft)
 
@@ -311,6 +335,7 @@ def collect():
                 ft = features(bk, bko, aflow(tidx, cid, fav, tt), spot_mom_at(tt), prior)
                 if ft is None: continue
                 micro_extra(ft, bdidx, wtidx, cid, fav, tt)
+                ft["cl_tail"] = cl_tail_at(tt, fav)
                 ft.update({"won": 1 if out == wn else 0, "day": day})
                 pop_rows.append(ft)
         del bidx, tidx
@@ -322,7 +347,8 @@ def collect():
 # Order-flow REAL (candidatas a edge) vs CONTROLES (precio/momentum — para contraste, no candidatas).
 # aflow queda como order-flow pero la cinta muestreada suele degenerarla → la guarda anti-artefacto la filtra.
 ORDERFLOW = ["spread", "imb1", "imb3", "micro", "d_imb1", "d_micro", "aflow",
-             "fullimb", "d_fullimb", "depth2", "caflow"]   # los 4 últimos = flujos nuevos (desde la ampliación)
+             "fullimb", "d_fullimb", "depth2", "caflow",   # los flujos nuevos (desde la ampliación del colector)
+             "cl_tail"]                                    # divergencia Chainlink (oráculo de resolución) — desde día 1
 CONTROLS  = ["favask", "spot_mom"]
 
 def wr(seg):
