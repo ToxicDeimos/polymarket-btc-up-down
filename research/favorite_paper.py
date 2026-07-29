@@ -146,6 +146,19 @@ def analyze():
         for lo, hi, lab in [(0.62, 0.72, "62-72¢"), (0.72, 0.82, "72-82¢"), (0.95, 1.01, "95-99¢")]:
             rep(lab, [r for r in S if lo <= float(r["ask"]) < hi])
 
+    # RIESGO: drawdown y rachas sobre la curva plana ($1/ventana) — para dimensionar y sobrevivir la varianza
+    rs = sorted(B, key=lambda r: int(r["ws"]))
+    flat = peak = 0.0; maxdd = 0.0; streak = worst = losses = 0
+    for r in rs:
+        a = float(r["ask"]); won = r["won"] == "1"
+        flat += (1 / a - 1) if won else -1
+        peak = max(peak, flat); maxdd = max(maxdd, peak - flat)
+        if won: streak = 0
+        else: streak += 1; losses += 1; worst = max(worst, streak)
+    print(f"\nRIESGO (curva $1/ventana): máx drawdown ${maxdd:.2f} (≈{maxdd:.0f} ventanas de stake)  ·  "
+          f"peor racha {worst} pérdidas seguidas  ·  racha actual {streak}  ·  {losses}/{len(rs)} perdidos "
+          f"({losses/len(rs)*100:.1f}%)")
+
     print("\nVEREDICTO (pre-fijado: ≥400 fills, win>ask significativo):")
     n = len(B); wr = sum(int(r["won"]) for r in B) / n; ap = sum(float(r["ask"]) for r in B) / n
     se = math.sqrt(wr * (1 - wr) / n)

@@ -93,6 +93,8 @@ def api_favorite():
     res_sorted = sorted(B, key=lambda r: int(r["ws"]))
     eq = {"labels": [], "flat": [], "kelly": []}
     flat = kelly = BR0
+    peak = BR0; maxdd = 0.0                                       # drawdown sobre la curva plana ($1/v)
+    streak = worst_streak = losses = 0                            # rachas de pérdidas
     for i, r in enumerate(res_sorted, 1):
         a = float(r["ask"]); won = r.get("won") == "1"
         flat += (1 / a - 1) if won else -1                       # stake fijo de $1
@@ -101,6 +103,12 @@ def api_favorite():
         eq["labels"].append(i)
         eq["flat"].append(round(flat, 2))
         eq["kelly"].append(round(kelly, 2))
+        peak = max(peak, flat); maxdd = max(maxdd, peak - flat)   # caída pico→valle en $ (stake $1)
+        if won: streak = 0
+        else: streak += 1; losses += 1; worst_streak = max(worst_streak, streak)
+    risk = {"maxdd": round(maxdd, 2), "worst_streak": worst_streak, "cur_streak": streak,
+            "losses": losses, "resolved": len(res_sorted),
+            "loss_pct": round(losses / len(res_sorted) * 100, 1) if res_sorted else 0.0}
 
     def trade(r):
         return {"ws": int(r["ws"]), "slug": r.get("slug"), "fav": r.get("fav"),
@@ -112,6 +120,7 @@ def api_favorite():
         "summary": {"n": len(rows), "status": dict(st), "bought": len(bought),
                     "resolved": len(B), "pending": pending, "fillrate": fillrate,
                     "overall": overall, "by_band": by_band, "shadow": shadow,
+                    "risk": risk,
                     "verdict": {"kind": verdict[0], "text": verdict[1]}},
         "trades": [trade(r) for r in shown],
         "equity": eq,

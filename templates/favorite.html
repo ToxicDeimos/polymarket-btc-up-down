@@ -93,6 +93,28 @@
 
 <div class="section">
   <div class="card">
+    <h2>Riesgo — drawdown y rachas (sobre la curva $1/ventana)</h2>
+    <div class="grid" style="padding:0;margin-top:4px">
+      <div><div class="sub">Máx. drawdown</div><div class="val red" id="r-dd" style="font-size:20px">—</div>
+        <div class="sub" id="r-dd-w">—</div></div>
+      <div><div class="sub">Peor racha de pérdidas</div><div class="val yellow" id="r-worst" style="font-size:20px">—</div>
+        <div class="sub">pérdidas seguidas</div></div>
+      <div><div class="sub">Racha actual</div><div class="val" id="r-cur" style="font-size:20px">—</div>
+        <div class="sub">pérdidas seguidas ahora</div></div>
+      <div><div class="sub">Tasa de pérdida</div><div class="val" id="r-loss" style="font-size:20px">—</div>
+        <div class="sub" id="r-loss-n">—</div></div>
+    </div>
+    <div class="sub" style="margin-top:10px">
+      El <b>drawdown</b> es la peor caída pico→valle de la curva plana (en $ apostando $1/ventana; ese "$X"
+      = X ventanas de stake perdidas en la peor racha). No se elimina —es la asimetría negativa del favorito—
+      pero sí se <b>sobrevive</b>: dimensiona tan pequeño que el peor drawdown plausible sea un encogimiento
+      de hombros. Con más fills, el peor drawdown crecerá: úsalo para calibrar el tamaño real antes de ir a live.
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="card">
     <h2>Últimas ventanas</h2>
     <table>
       <thead><tr><th>ventana (ET)</th><th>favorito</th><th>ask (pagado)</th><th>underdog</th><th>estado</th><th>ganó</th></tr></thead>
@@ -163,6 +185,16 @@ async function refresh(){
       eqChart.data.datasets[0].data=d.equity.kelly;
       eqChart.data.datasets[1].data=d.equity.flat;
       eqChart.update('none');
+    }
+
+    const rk=s.risk;
+    if(rk){
+      $('r-dd').textContent=`-$${rk.maxdd.toFixed(2)}`;
+      $('r-dd-w').textContent=`≈ ${Math.round(rk.maxdd)} ventanas de stake`;
+      $('r-worst').textContent=rk.worst_streak;
+      $('r-cur').textContent=rk.cur_streak; $('r-cur').className=`val ${rk.cur_streak>=3?'red':''}`;
+      $('r-loss').textContent=`${rk.loss_pct}%`;
+      $('r-loss-n').textContent=`${rk.losses}/${rk.resolved} perdidos`;
     }
 
     let zr=`<tr><td><b>TODO (82-95¢)</b></td>${stat(o)}</tr>`;
