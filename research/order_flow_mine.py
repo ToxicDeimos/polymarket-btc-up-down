@@ -306,6 +306,18 @@ def collect():
             lag = sp - cl                      # >0: Binance por encima de Chainlink → Chainlink subirá
             return round(lag if fav == "Up" else -lag, 2)
 
+        def cl_open_feats(ws, t, fav):
+            # VARIANTE open→close (el estándar de resolución real: cl_close vs cl_open).
+            #  cl_gap      = standing del ORÁCULO apertura→ahora, a favor del favorito (¿ya va ganando?).
+            #  cl_open_off = Chainlink_apertura − Binance_apertura, a favor del favorito. La BARRA de
+            #                resolución (cl_open) puede estar desplazada de donde el mercado ancla (sp_open)
+            #                por el lag → mispricing que el precio NO refleja.
+            sgn = 1 if fav == "Up" else -1
+            clo = spot_at(clks, clvs, ws, 45); cln = spot_at(clks, clvs, t, 45); spo = spot_at(sks, svs, ws, 20)
+            gap = round((cln - clo) * sgn, 2) if (clo and cln) else None
+            off = round((clo - spo) * sgn, 2) if (clo and spo) else None
+            return gap, off
+
         # ganadores de ese día
         for fl in win_by_day.get(day, []):
             wn = winner(fl["ws"])
@@ -318,6 +330,7 @@ def collect():
             if ft is None: continue
             micro_extra(ft, bdidx, wtidx, fl["cid"], fav, fl["ts"])
             ft["cl_tail"] = cl_tail_at(fl["ts"], fav)
+            ft["cl_gap"], ft["cl_open_off"] = cl_open_feats(fl["ws"], fl["ts"], fav)
             ft.update({"won": 1 if fl["out"] == wn else 0, "day": day, "who": fl["who"]})
             winner_rows.append(ft)
 
@@ -336,6 +349,7 @@ def collect():
                 if ft is None: continue
                 micro_extra(ft, bdidx, wtidx, cid, fav, tt)
                 ft["cl_tail"] = cl_tail_at(tt, fav)
+                ft["cl_gap"], ft["cl_open_off"] = cl_open_feats(ws, tt, fav)
                 ft.update({"won": 1 if out == wn else 0, "day": day})
                 pop_rows.append(ft)
         del bidx, tidx
@@ -348,7 +362,7 @@ def collect():
 # aflow queda como order-flow pero la cinta muestreada suele degenerarla → la guarda anti-artefacto la filtra.
 ORDERFLOW = ["spread", "imb1", "imb3", "micro", "d_imb1", "d_micro", "aflow",
              "fullimb", "d_fullimb", "depth2", "caflow",   # los flujos nuevos (desde la ampliación del colector)
-             "cl_tail"]                                    # divergencia Chainlink (oráculo de resolución) — desde día 1
+             "cl_tail", "cl_gap", "cl_open_off"]           # divergencia Chainlink (oráculo de resolución) — desde día 1
 CONTROLS  = ["favask", "spot_mom"]
 
 def wr(seg):
