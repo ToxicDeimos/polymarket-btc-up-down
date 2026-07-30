@@ -25,7 +25,11 @@ import urllib.request, json, time, csv, os, sys, math
 ENTRY   = 240
 FAV_MIN = 0.82         # zona del wallet #1 (favorito fuerte); < 82 salió −EV/ruido en el backtest
 FAV_MAX = 0.95         # > 95¢ salió sobrevalorado (−0.5pp): el margen no cubre el precio casi-1
-LOG = os.path.join(os.path.dirname(__file__), "favorite_paper_log.csv")
+# ACTIVO: por defecto btc (mismo log de siempre, no rompe el bot en curso). eth/sol/xrp/doge → su propio log.
+# El sesgo favorito-longshot es conductual (no específico de BTC) → debería replicar en otros activos.
+ASSET = (os.environ.get("FAV_ASSET") or "btc").lower()
+LOG = os.path.join(os.path.dirname(__file__),
+                   "favorite_paper_log.csv" if ASSET == "btc" else f"favorite_paper_{ASSET}_log.csv")
 HEADER = ["ws", "slug", "fav", "ask", "ask2", "status", "winner", "won", "cid"]
 
 def get(url, tries=2):
@@ -47,7 +51,7 @@ def log(row):
         w.writerow(row)
 
 def discover(ws):
-    slug = f"btc-updown-5m-{ws}"
+    slug = f"{ASSET}-updown-5m-{ws}"
     d = get(f"https://gamma-api.polymarket.com/markets?slug={slug}")
     if not (isinstance(d, list) and d): return None
     m = d[0]
@@ -174,7 +178,7 @@ def analyze():
 def main():
     if "--analyze" in sys.argv: analyze(); return
     if "--resolve" in sys.argv: print(f"rellenadas {backfill_pending(verbose=True)}"); return
-    print("=" * 60 + "\n  FAVORITE PAPER BOT (DRY) — comprar el favorito 82-95¢ y aguantar\n" + "=" * 60)
+    print("=" * 60 + f"\n  FAVORITE PAPER BOT (DRY) [{ASSET.upper()}] — comprar el favorito 82-95¢ y aguantar\n" + "=" * 60)
     n = backfill_pending(verbose=True)
     if n: print(f"backfill inicial: {n}")
     seen = set(); last_bf = now()
