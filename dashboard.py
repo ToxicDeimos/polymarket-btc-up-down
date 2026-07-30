@@ -12,7 +12,11 @@ from flask import Flask, jsonify, render_template, redirect
 app = Flask(__name__)
 
 BASE = os.path.dirname(__file__)
-FAVORITE_FILE = os.path.join(BASE, "research", "favorite_paper_log.csv")
+# Un panel del favorito por activo. btc = el log de siempre; el resto, su propio log (FAV_ASSET del bot).
+FAV_FILES = {
+    "btc": os.path.join(BASE, "research", "favorite_paper_log.csv"),
+    "eth": os.path.join(BASE, "research", "favorite_paper_eth_log.csv"),
+}
 
 
 # ── Rutas ─────────────────────────────────────────────────────────────────────
@@ -47,13 +51,16 @@ def _fav_stats(rows):
 
 
 @app.route("/favorite")
-def favorite():
-    return render_template("favorite.html")
+@app.route("/favorite/<asset>")
+def favorite(asset="btc"):
+    if asset not in FAV_FILES: asset = "btc"
+    return render_template("favorite.html", asset=asset, assets=list(FAV_FILES))
 
 
 @app.route("/api/favorite")
-def api_favorite():
-    rows = _read_csv(FAVORITE_FILE)
+@app.route("/api/favorite/<asset>")
+def api_favorite(asset="btc"):
+    rows = _read_csv(FAV_FILES.get(asset, FAV_FILES["btc"]))
     if not rows:
         return jsonify({"summary": {"n": 0}, "trades": []})
     from collections import Counter
