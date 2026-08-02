@@ -80,6 +80,10 @@ def main():
               + ("  (n real → su mediana ≈ tu drawdown observado)" if L is None else ""))
 
     H = REC_H if REC_H in dd95 else max(dd95)
+    if dd95[H] < 0.5:
+        print(f"\nDrawdown p95 casi nulo ({dd95[H]:.1f} stakes) — con tan pocas pérdidas no se puede dimensionar "
+              f"con fiabilidad. Recalcula con más fills (cuando haya alguna racha de pérdidas).")
+        return
     print(f"\nSTAKE sugerido (PLANO, % del capital/ventana) — peor drawdown p95 a {H} fills = {dd95[H]:.1f} stakes:")
     for tol in TOLS:
         print(f"   tolerancia {int(tol*100)}% de drawdown  →  {tol/dd95[H]*100:.2f}% del capital/ventana")
