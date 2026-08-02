@@ -105,6 +105,7 @@
       <div><div class="sub">Tasa de pérdida</div><div class="val" id="r-loss" style="font-size:20px">—</div>
         <div class="sub" id="r-loss-n">—</div></div>
     </div>
+    <div id="r-sizing" style="margin-top:12px;padding:10px 14px;border-radius:8px;background:#12261a;border:1px solid #1f6f3a;font-size:13px">—</div>
     <div class="sub" style="margin-top:10px">
       El <b>drawdown</b> es la peor caída pico→valle de la curva plana (en $ apostando $1/ventana; ese "$X"
       = X ventanas de stake perdidas en la peor racha). No se elimina —es la asimetría negativa del favorito—
@@ -197,6 +198,17 @@ async function refresh(){
       $('r-cur').textContent=rk.cur_streak; $('r-cur').className=`val ${rk.cur_streak>=3?'red':''}`;
       $('r-loss').textContent=`${rk.loss_pct}%`;
       $('r-loss-n').textContent=`${rk.losses}/${rk.resolved} perdidos`;
+      const z=rk.sizing;
+      if(z){
+        $('r-sizing').innerHTML=`<b>Stake sugerido (plano): <span class="green">~${z.rec_pct}% del capital/ventana</span></b>`+
+          ` — para que el peor drawdown plausible (p95 a ${z.horizon} fills ≈ ${z.dd95} stakes) no pase del `+
+          `${Math.round(z.tol*100)}% del capital. Con $100 → ~$${z.rec_pct.toFixed(2)}/ventana. `+
+          `<span class="muted">Monte Carlo sobre tus ${z.n} fills · ${z.computed} · corre favorite_sizing.py para recalcular.</span>`;
+      } else {
+        $('r-sizing').innerHTML=`<span class="muted">Stake sugerido: corre <b>favorite_sizing.py</b> `+
+          `(${ASSET==='btc'?'':'FAV_ASSET='+ASSET+' '}python3 favorite_sizing.py) para calcularlo con el bootstrap del drawdown real.</span>`;
+        $('r-sizing').style.background='transparent'; $('r-sizing').style.borderColor='var(--border)';
+      }
     }
 
     let zr=`<tr><td><b>TODO (82-95¢)</b></td>${stat(o)}</tr>`;

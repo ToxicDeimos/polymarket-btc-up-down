@@ -4,6 +4,7 @@ Uso: python dashboard.py
 Abre: http://localhost:5000
 """
 import csv
+import json
 import math
 import os
 import statistics
@@ -116,6 +117,12 @@ def api_favorite(asset="btc"):
     risk = {"maxdd": round(maxdd, 2), "worst_streak": worst_streak, "cur_streak": streak,
             "losses": losses, "resolved": len(res_sorted),
             "loss_pct": round(losses / len(res_sorted) * 100, 1) if res_sorted else 0.0}
+    # Stake sugerido: lo calcula favorite_sizing.py (Monte Carlo del drawdown real) y deja una caché.
+    sp = os.path.join(BASE, "research", f"favorite_sizing_{asset}.json")
+    if os.path.exists(sp):
+        try:
+            with open(sp, encoding="utf-8") as f: risk["sizing"] = json.load(f)
+        except Exception: pass
 
     def trade(r):
         return {"ws": int(r["ws"]), "slug": r.get("slug"), "fav": r.get("fav"),
