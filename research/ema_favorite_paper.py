@@ -1,10 +1,12 @@
 """
-ema_favorite_paper.py — EXP #17 (DRY): favorito 62-82¢ FILTRADO por tendencia EMA21 (1m de Binance).
+ema_favorite_paper.py — EXP #17 (DRY): favorito 52-82¢ FILTRADO por tendencia EMA21 (1m de Binance).
 
-Hallazgo 2026-08-03: en la zona incierta 62-82¢ los ganadores netean +3.3pp de comisión; y el separador que
-GENERALIZA (train/test, único en todo el proyecto) es precio vs EMA21 en 1m:
-   favorito ALINEADO con la EMA21 (precio del lado del favorito) → +16-18pp NETOS de fee (train Y test)
-   favorito CONTRA (rebote contra-tendencia)                     → −20 a −32pp NETOS (train Y test)
+Hallazgo 2026-08-03: el separador que GENERALIZA (train/test, único en todo el proyecto) es precio vs EMA21
+en 1m, y el edge es MAYOR cuanto más barato/incierto el favorito (la confirmación de tendencia aporta más):
+   ALINEADO (precio del lado del favorito):  52-62¢ +23.9pp · 62-72¢ +17.6pp · 72-82¢ +16.2pp  NETO de fee
+   CONTRA (rebote contra-tendencia):         ~−27pp NETO en todas las bandas
+La EMA es, en esencia, el MOMENTUM hecho bien: comprar el líder solo cuando la tendencia 1m lo confirma
+(evitando los rebotes que revierten). Por eso el momentum crudo moría y esto no.
 
 Este bot lo confirma EN VIVO (paper): a 240s mira el favorito (mayor ask) en 62-82¢, calcula precio vs EMA21
 de Binance 1m, y COMPRA solo si está ALINEADO. Los CONTRA se registran en SOMBRA (deben perder → validan la
@@ -18,7 +20,8 @@ Autónomo (stdlib). Log gitignored.
 import urllib.request, json, time, csv, os, sys, math
 
 ENTRY  = 240
-LO, HI = 0.62, 0.82        # zona incierta (donde vive la selección de los ganadores)
+LO, HI = 0.52, 0.82        # zona incierta. El edge EMA es MAYOR cuanto más barato (52-62¢ +23.9pp neto vs
+                           # 72-82¢ +16.2pp): más incierto = la confirmación de tendencia aporta más.
 EMA_N  = 21                # EMA sobre closes 1m
 MIN_VERDICT = 80           # fills comprados para veredicto (el efecto es ENORME → confirma rápido)
 LOG = os.path.join(os.path.dirname(__file__), "ema_favorite_log.csv")
@@ -143,9 +146,12 @@ def analyze():
 
     B = [r for r in rows if r["status"] == "bought"]
     A = [r for r in rows if r["status"] == "against"]
-    print("\nEDGE en 62-82¢ con filtro EMA21 1m (NETO de comisión taker):")
+    print("\nEDGE en 52-82¢ con filtro EMA21 1m (NETO de comisión taker):")
     b = rep("COMPRADO (✓alineado)", B)
     a = rep("SOMBRA (✗contra)", A)
+    print("  desglose del COMPRADO por banda (edge esperado mayor en la barata):")
+    for lo, hi, lab in [(0.52, 0.62, "52-62¢"), (0.62, 0.72, "62-72¢"), (0.72, 0.821, "72-82¢")]:
+        rep("  " + lab, [r for r in B if r.get("ask") and lo <= float(r["ask"]) < hi])
 
     print("\nVEREDICTO (pre-fijado: ≥80 comprados; alineado NETO>0 signif. Y contra NETO<0 = la regla vale):")
     if b is None or b["n"] < MIN_VERDICT:
