@@ -29,15 +29,24 @@ Features de order-flow a la entrada (lado del favorito, desde el libro + cinta):
 Necesita lab/klines_1m_btc.csv (hist_backtest.py), lab/wtrades_*.csv (winners_deep.py) y lab/books_*.csv +
 tape_*.csv + spot_*.csv (lab-collector, 24/7). Autónomo (stdlib). Procesa día a día (RAM acotada, Pi-friendly).
 
-ESTADO (2026-07-27): esqueleto EN PAUSA. El lab tenía ~10 días → sin potencia. Correr cuando haya ~4-6
-semanas (≈ mediados de agosto 2026). Ver memoria order-flow-mine-pending.md.
+REORIENTADO (2026-08-03): hallazgo clave — los ganadores NO baten al mercado en el favorito medio (la fee
+mata ese +0.84pp), sino SELECCIONANDO en la ZONA INCIERTA 62-82¢: ahí el favorito medio da −3.5pp pero
+ellos +4.7pp crudo / +3.3pp NETO de fee (vivo HOY, post-comisión). Por eso el mine ahora: (1) zona 62-82¢
+(no 62-95), (2) métrica NETA de comisión (win − precio − 0.07·p·(1−p)). Busca el feature de order-flow que
+sube el NETO en esa banda = la regla de selección replicable. Ver memoria order-flow-mine-pending.md.
+
+ESTADO: correr cuando el lab tenga potencia (~4-6 semanas de libro, ≈ mediados agosto 2026). PREVIEW antes.
 """
 import os, sys, csv, glob, math, bisect, time
 from collections import defaultdict
 
 DIR   = os.path.join(os.path.dirname(__file__), "lab")
 KL    = os.path.join(DIR, "klines_1m_btc.csv")
-FAV_LO, FAV_HI = 0.62, 0.95      # zona favorito (donde está el edge de los ganadores)
+# ZONA INCIERTA 62-82¢: donde vive el ALFA DE SELECCIÓN de los ganadores (test 2026-08-03: en 62-82 el
+# favorito MEDIO da −3.5pp pero los ganadores sacan +4.7pp crudo / +3.3pp neto de fee). En 90-95 (casi
+# seguro, sin selección que hacer) hasta los ganadores PIERDEN. Aquí es donde un feature puede separar.
+FAV_LO, FAV_HI = 0.62, 0.82
+def FEE(p): return 0.07 * p * (1 - p)   # comisión taker Polymarket (crypto): C×0.07×p×(1−p) por share
 MAXAGE  = 12                     # s: antigüedad máxima de un snapshot de libro para valer como "a la entrada"
 AFLOW_W = 30                     # s: ventana de flujo agresor previo
 DELTA   = 45                     # s: lookback para la DINÁMICA del libro (Δimbalance, Δmicroprice)
@@ -331,7 +340,7 @@ def collect():
             micro_extra(ft, bdidx, wtidx, fl["cid"], fav, fl["ts"])
             ft["cl_tail"] = cl_tail_at(fl["ts"], fav)
             ft["cl_gap"], ft["cl_open_off"] = cl_open_feats(fl["ws"], fl["ts"], fav)
-            ft.update({"won": 1 if fl["out"] == wn else 0, "day": day, "who": fl["who"]})
+            ft.update({"won": 1 if fl["out"] == wn else 0, "day": day, "who": fl["who"], "pr": fl["pr"]})
             winner_rows.append(ft)
 
         # población (montón): cinta 5m, BUY, zona favorito, lado favorito. ws desde el slug (cid_ws).
@@ -350,7 +359,7 @@ def collect():
                 micro_extra(ft, bdidx, wtidx, cid, fav, tt)
                 ft["cl_tail"] = cl_tail_at(tt, fav)
                 ft["cl_gap"], ft["cl_open_off"] = cl_open_feats(ws, tt, fav)
-                ft.update({"won": 1 if out == wn else 0, "day": day})
+                ft.update({"won": 1 if out == wn else 0, "day": day, "pr": pr})
                 pop_rows.append(ft)
         del bidx, tidx
     return winner_rows, pop_rows, len(book_days)
@@ -376,6 +385,11 @@ def quintiles(rows, key):
     if len(vals) < 20: return None
     return [vals[int(len(vals) * f)] for f in (.2, .4, .6, .8)]
 
+def netedge(rs):
+    """Edge NETO de comisión en pp: media de (won − precio − fee(precio)). >0 = rentable como taker."""
+    if not rs: return None
+    return sum(r["won"] - float(r["pr"]) - FEE(float(r["pr"])) for r in rs) / len(rs) * 100
+
 def split_by_feature(rows, key, label):
     q = quintiles(rows, key)
     if not q or q[0] == q[-1]:
@@ -383,20 +397,23 @@ def split_by_feature(rows, key, label):
     edges = [(-1e18, q[0]), (q[0], q[1]), (q[1], q[2]), (q[2], q[3]), (q[3], 1e18)]
     names = ["Q1 bajo", "Q2", "Q3", "Q4", "Q5 alto"]
     print(f"    {key} ({label}):")
-    stats = []
+    stats = []; nets = []
     for (lo, hi), nm in zip(edges, names):
-        s = wr([r["won"] for r in rows if r.get(key) is not None and lo <= r[key] < hi])
-        if s: print(f"       {nm:<8} n={s[0]:>5}  win {s[1]:6.2%}  (IC {s[2]:.1%}-{s[3]:.1%})")
-        stats.append(s)
+        seg = [r for r in rows if r.get(key) is not None and lo <= r[key] < hi]
+        s = wr([r["won"] for r in seg]); ne = netedge(seg)
+        if s: print(f"       {nm:<8} n={s[0]:>5}  win {s[1]:6.2%}  NETO {ne:+5.2f}pp  (IC {s[2]:.1%}-{s[3]:.1%})")
+        stats.append(s); nets.append(ne)
     # GUARDA ANTI-ARTEFACTO: ≥4 buckets con n≥MIN_BUCKET y extremos poblados (si no, distribución degenerada)
     good = sum(1 for s in stats if s and s[0] >= MIN_BUCKET)
     if good < 4 or not stats[0] or not stats[-1] or stats[0][0] < MIN_BUCKET or stats[-1][0] < MIN_BUCKET:
         print(f"       ↳ distribución degenerada (buckets vacíos/minúsculos) → NO candidata")
         return None
-    lift = (stats[-1][1] - stats[0][1]) * 100                     # lift Q5−Q1 en pp
+    lift = (stats[-1][1] - stats[0][1]) * 100                     # lift Q5−Q1 en pp (win rate)
     wins = [s[1] for s in stats]; tol = 0.005                     # monotonía (tolerancia 0.5pp por ruido)
     mono = sum(1 if wins[i+1]-wins[i] > tol else (-1 if wins[i+1]-wins[i] < -tol else 0) for i in range(4))
-    print(f"       ↳ lift Q5−Q1 {lift:+.2f}pp · monotonía {mono:+d}/4" + ("  ← MONÓTONA" if abs(mono) >= 3 else ""))
+    net_top = nets[-1] if nets[-1] is not None else 0.0           # edge NETO del quintil bueno = ¿regla rentable?
+    print(f"       ↳ lift Q5−Q1 {lift:+.2f}pp · mono {mono:+d}/4 · NETO Q5 {net_top:+.2f}pp"
+          + ("  ← MONÓTONA" if abs(mono) >= 3 else "") + ("  ✅ Q5 NETO>0" if net_top > 0 else ""))
     return (lift, mono)
 
 def main():
@@ -424,7 +441,11 @@ def main():
         return
 
     base = wr([r["won"] for r in winner_rows])
-    print(f"\nwin base de los favoritos de los GANADORES: {base[1]:.2%}  (n={base[0]})\n")
+    base_net = netedge(winner_rows)
+    ap = sum(float(r["pr"]) for r in winner_rows) / len(winner_rows)
+    print(f"\nGANADORES en zona {FAV_LO:.0%}-{FAV_HI:.0%} (la incierta, donde vive la selección):")
+    print(f"  win base {base[1]:.2%}  ·  precio medio {ap:.1%}  ·  edge NETO de fee {base_net:+.2f}pp  (n={base[0]})")
+    print(f"  → objetivo: encontrar un feature cuyo quintil bueno tenga NETO Q5 aún MAYOR = regla replicable y +EV.\n")
 
     # train/test por día (mitad cronológica) — disciplina anti-overfitting
     days = sorted({r["day"] for r in winner_rows})
@@ -472,14 +493,14 @@ def main():
     best = topk[0]
 
     print("\n" + "=" * 92)
-    print("CÓMO LEER (pre-registrado)")
+    print("CÓMO LEER (pre-registrado) — zona 62-82¢, métrica NETA de comisión")
     print("=" * 92)
-    print("· REPLICABLE si una candidata da lift ≥3pp y MONÓTONA en TRAIN, mismo signo y ≥1.5pp en TEST, y el")
-    print("  MONTÓN sube igual → comprar el favorito solo en el quintil bueno = EDGE nuevo.")
-    print("· Si el lift NO generaliza a test o el montón NO lo confirma → es ruido/skill, no una regla replicable.")
-    print("· imb/micro/spread + d_imb1/d_micro salen del libro directo (fiables). aflow sale de la cinta muestreada")
-    print("  (incompleta) → señal débil, y la guarda anti-artefacto suele descartarla. Con veredicto REAL: pasar la")
-    print("  regla a favorite_paper como filtro y medir en vivo.")
+    print("· El objetivo es replicar la SELECCIÓN de los ganadores en la zona incierta (ellos +3-5pp NETOS ahí).")
+    print("· REPLICABLE si una candidata: lift ≥3pp y MONÓTONA en TRAIN, mismo signo ≥1.5pp en TEST, el MONTÓN")
+    print("  sube igual, Y su NETO Q5 > 0 (rentable tras comisión) → comprar el favorito solo en el quintil bueno.")
+    print("· Lo que MANDA ahora es el NETO Q5, no el win a secas: un feature que suba el win pero deje NETO≤0 NO vale.")
+    print("· Si nada da NETO Q5 >0 que generalice + montón → la selección no está en estas features (probar más).")
+    print("· Con veredicto REAL: pasar la regla a favorite_paper (filtro + banda 62-82) y medir en vivo.")
     if not ready:
         print("\n⚠ RECORDATORIO: esto ha corrido en PREVIEW (potencia insuficiente). NO tomes los números como edge.")
 
