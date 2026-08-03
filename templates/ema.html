@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>EMA Favorite Bot (DRY)</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+  :root{--bg:#0d1117;--card:#161b22;--border:#30363d;--green:#3fb950;--red:#f85149;
+        --yellow:#d29922;--blue:#58a6ff;--purple:#bc8cff;--text:#e6edf3;--muted:#8b949e;}
+  *{margin:0;padding:0;box-sizing:border-box;}
+  body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,sans-serif;font-size:14px;}
+  a{color:var(--blue);text-decoration:none;} a:hover{text-decoration:underline;}
+  h1{font-size:18px;font-weight:600;}
+  h2{font-size:13px;font-weight:600;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:12px;}
+  .header{padding:16px 24px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:16px;}
+  .dot{width:8px;height:8px;border-radius:50%;} .dot.on{background:var(--green);box-shadow:0 0 6px var(--green);} .dot.off{background:var(--muted);}
+  #last-update{font-size:11px;color:var(--muted);margin-left:auto;}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;padding:16px 24px;}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:16px;}
+  .card .val{font-size:24px;font-weight:700;margin-top:4px;}
+  .card .sub{font-size:11px;color:var(--muted);margin-top:2px;}
+  .green{color:var(--green);} .red{color:var(--red);} .blue{color:var(--blue);} .yellow{color:var(--yellow);} .muted{color:var(--muted);}
+  .section{padding:0 24px 24px;}
+  .verdict{margin:0 24px 16px;padding:14px 18px;border-radius:8px;border:1px solid var(--border);font-weight:600;}
+  .verdict.real{background:#12261a;color:var(--green);border-color:#1f6f3a;}
+  .verdict.maybe{background:#26230f;color:var(--yellow);border-color:#6f5a1f;}
+  .verdict.dead{background:#2a1416;color:var(--red);border-color:#6f2530;}
+  .verdict.wait{background:#161b22;color:var(--muted);}
+  table{width:100%;border-collapse:collapse;font-size:13px;}
+  th{text-align:left;padding:8px 12px;border-bottom:1px solid var(--border);color:var(--muted);font-weight:500;font-size:11px;text-transform:uppercase;}
+  td{padding:7px 12px;border-bottom:1px solid #21262d;font-variant-numeric:tabular-nums;}
+  tr:last-child td{border-bottom:none;} tr:hover td{background:#1c2128;}
+  .pill{display:inline-block;padding:1px 7px;border-radius:10px;font-size:11px;font-weight:600;}
+  .pill.up{background:#1f3a2e;color:var(--green);} .pill.down{background:#3a1f1f;color:var(--red);}
+  .pill.al{background:#1f3a2e;color:var(--green);} .pill.ct{background:#3a1f1f;color:var(--red);} .pill.skip{background:#21262d;color:var(--muted);}
+  .pill.win{background:#1f3a2e;color:var(--green);} .pill.lose{background:#3a1f1f;color:var(--red);} .pill.pend{background:#26230f;color:var(--yellow);}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="dot off" id="dot"></div>
+  <h1>EMA Favorite Bot · BTC <span class="muted" style="font-weight:400">(DRY · exp #17 · favorito 52-82¢ filtrado por EMA21 1m)</span></h1>
+  <span id="last-update">—</span>
+</div>
+
+<div class="grid">
+  <div class="card"><h2>Ventanas</h2><div class="val" id="k-n">—</div><div class="sub" id="k-st">—</div></div>
+  <div class="card"><h2>Comprados (✓alineado)</h2><div class="val green" id="k-bought">—</div><div class="sub" id="k-fr">favorito 52-82¢ + EMA confirma</div></div>
+  <div class="card"><h2>Sombra (✗contra)</h2><div class="val red" id="k-against">—</div><div class="sub">deben PERDER (validan la regla)</div></div>
+  <div class="card"><h2>WIN alineado</h2><div class="val" id="k-wr">—</div><div class="sub" id="k-ci">vs ask</div></div>
+  <div class="card" style="border-color:#1f6f3a"><h2>★ EDGE NETO (win − ask − fee)</h2><div class="val" id="k-net">—</div><div class="sub" id="k-netsub">tras comisión taker</div></div>
+  <div class="card"><h2>Progreso veredicto</h2><div class="val" id="k-prog">—</div><div class="sub">≥80 comprados</div></div>
+</div>
+
+<div class="verdict wait" id="verdict">—</div>
+
+<div class="section">
+  <div class="card">
+    <h2>La regla: ALINEADO vs CONTRA (neto de comisión)</h2>
+    <table>
+      <thead><tr><th></th><th>fills</th><th>WIN</th><th>ask</th><th>crudo</th><th>fee</th><th>NETO</th></tr></thead>
+      <tbody id="rule-body"></tbody>
+    </table>
+    <div class="sub" style="margin-top:8px">
+      A 240s, el bot mira el favorito (mayor ask) en <b>52-82¢</b> y calcula <b>precio vs EMA21</b> de Binance 1m.
+      Si el precio está del lado del favorito (<b>tendencia confirma</b>) → <span class="green">COMPRA</span>.
+      Si va en contra (rebote) → <span class="red">SOMBRA</span> (no opera, pero se resuelve para validar que pierde).
+      <b>NETO</b> = win − ask − comisión (0.07·p·(1−p)). En los datos de los ganadores: alineado +16 a +24pp, contra ~−27pp.
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="card">
+    <h2>Desglose del COMPRADO por banda — el edge es mayor cuanto más barato</h2>
+    <table>
+      <thead><tr><th>banda</th><th>fills</th><th>WIN</th><th>ask medio</th><th>crudo</th><th>NETO</th></tr></thead>
+      <tbody id="band-body"></tbody>
+    </table>
+    <div class="sub" style="margin-top:8px">Esperado (datos ganadores): 52-62¢ ~+24pp · 62-72¢ ~+18pp · 72-82¢ ~+16pp. Más incierto = la EMA aporta más.</div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="card">
+    <h2>P&L neto acumulado por share — alineado (compra) vs contra (sombra)</h2>
+    <div style="height:280px"><canvas id="eq-chart"></canvas></div>
+    <div class="sub" style="margin-top:8px">
+      Cada punto suma <b>(win − ask − fee)</b> por share, en orden. La <span class="green">verde (alineado)</span> debería
+      subir; la <span class="red">roja (contra)</span> debería hundirse. Si es así, la regla EMA funciona forward.
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="card">
+    <h2>Últimas ventanas</h2>
+    <table>
+      <thead><tr><th>ventana (ET)</th><th>favorito</th><th>ask</th><th>EMA</th><th>px vs ema21</th><th>estado</th><th>ganó</th></tr></thead>
+      <tbody id="trades-body"></tbody>
+    </table>
+    <div class="sub" id="trades-empty" style="display:none;margin-top:8px">Sin ventanas aún.</div>
+  </div>
+</div>
+
+<script>
+const $=id=>document.getElementById(id);
+const eqChart=new Chart(document.getElementById('eq-chart').getContext('2d'),{
+  type:'line',
+  data:{labels:[],datasets:[
+    {label:'ALINEADO (compra)', data:[],borderColor:'#3fb950',tension:.15,pointRadius:0,borderWidth:2},
+    {label:'CONTRA (sombra)',   data:[],borderColor:'#f85149',tension:.15,pointRadius:0,borderWidth:2},
+  ]},
+  options:{responsive:true,maintainAspectRatio:false,
+    plugins:{legend:{labels:{color:'#8b949e'}}},
+    scales:{y:{grid:{color:'#21262d'},ticks:{color:'#8b949e'},title:{display:true,text:'P&L neto acum. / share',color:'#8b949e'}},
+            x:{grid:{color:'#21262d'},ticks:{color:'#8b949e',maxTicksLimit:10},title:{display:true,text:'nº de fill resuelto',color:'#8b949e'}}}}
+});
+function etRange(ws){
+  const a=new Date(ws*1000), b=new Date((ws+300)*1000);
+  const f=d=>d.toLocaleTimeString('en-US',{timeZone:'America/New_York',hour:'2-digit',minute:'2-digit',hour12:false});
+  return f(a)+'–'+f(b)+' ET';
+}
+function statRow(label, cls, s){
+  if(!s) return `<tr><td>${label}</td><td colspan="6" class="muted">sin fills resueltos</td></tr>`;
+  const nC=s.net>=0?'green':'red';
+  return `<tr><td>${label}</td><td>${s.n}</td>`+
+    `<td class="${s.win_rate>s.ask?'green':'red'}">${s.win_rate}% <span class="muted">(${s.ci_lo}-${s.ci_hi})</span></td>`+
+    `<td class="muted">${s.ask}%</td><td class="${s.raw>=0?'green':'red'}">${s.raw>=0?'+':''}${s.raw}pp</td>`+
+    `<td class="muted">-${s.fee}pp</td><td class="${nC}"><b>${s.net>=0?'+':''}${s.net}pp</b></td></tr>`;
+}
+function bandRow(label, s){
+  if(!s) return `<tr><td>${label}</td><td colspan="5" class="muted">sin fills</td></tr>`;
+  const nC=s.net>=0?'green':'red';
+  return `<tr><td>${label}</td><td>${s.n}</td><td class="${s.win_rate>s.ask?'green':'red'}">${s.win_rate}%</td>`+
+    `<td class="muted">${s.ask}%</td><td class="${s.raw>=0?'green':'red'}">${s.raw>=0?'+':''}${s.raw}pp</td>`+
+    `<td class="${nC}"><b>${s.net>=0?'+':''}${s.net}pp</b></td></tr>`;
+}
+async function refresh(){
+  try{
+    const d=await fetch('/api/ema').then(r=>r.json()); const s=d.summary;
+    $('dot').className='dot on'; $('last-update').textContent='actualizado '+new Date().toLocaleTimeString();
+    if(!s||!s.n){$('k-n').textContent='0';$('trades-empty').style.display='block';return;}
+    $('k-n').textContent=s.n;
+    const st=s.status||{};
+    $('k-st').textContent=`comprados ${st.bought||0} · sombra ${st.against||0} · skip ${st.skip||0}`;
+    $('k-bought').textContent=s.bought;
+    $('k-fr').textContent=`${s.fillrate}% de las ventanas`;
+    $('k-against').textContent=s.against;
+    const al=s.aligned;
+    if(al){
+      $('k-wr').textContent=`${al.win_rate}%`; $('k-wr').className=`val ${al.win_rate>al.ask?'green':'red'}`;
+      $('k-ci').textContent=`IC ${al.ci_lo}-${al.ci_hi}% · ask ${al.ask}%`;
+      $('k-net').textContent=`${al.net>=0?'+':''}${al.net}pp`; $('k-net').className=`val ${al.net>=0?'green':'red'}`;
+      $('k-netsub').textContent=`crudo ${al.raw>=0?'+':''}${al.raw}pp · fee -${al.fee}pp · IC neto desde ${al.net_lo>=0?'+':''}${al.net_lo}pp`;
+      $('k-prog').textContent=`${Math.min(al.n,80)}/80`;
+    } else {$('k-wr').textContent='—';$('k-net').textContent='—';$('k-prog').textContent='0/80';}
+    $('verdict').className=`verdict ${s.verdict.kind}`; $('verdict').textContent=s.verdict.text;
+
+    $('rule-body').innerHTML=statRow('<span class="pill al">✓ ALINEADO (compra)</span>','al',s.aligned)+
+                             statRow('<span class="pill ct">✗ CONTRA (sombra)</span>','ct',s.against_s);
+    const bb=s.by_band||{};
+    $('band-body').innerHTML=['52-62c','62-72c','72-82c'].map(b=>bandRow(b.replace('c','¢'),bb[b])).join('');
+
+    if(d.equity){
+      eqChart.data.labels=d.equity.labels;
+      eqChart.data.datasets[0].data=d.equity.aligned;
+      eqChart.data.datasets[1].data=d.equity.against;
+      eqChart.update('none');
+    }
+
+    const tb=$('trades-body');
+    if(!d.trades.length){$('trades-empty').style.display='block';tb.innerHTML='';}
+    else{
+      $('trades-empty').style.display='none';
+      tb.innerHTML=d.trades.map(t=>{
+        const side=t.fav==='Up'?'up':(t.fav==='Down'?'down':'skip');
+        const alC=t.aligned==='1'?'al':'ct', alL=t.aligned==='1'?'✓ alineado':'✗ contra';
+        const stC=t.status==='bought'?'al':'ct', stL=t.status==='bought'?'COMPRA':'sombra';
+        let wc='pend',wl='pend.';
+        if(t.won==='1'){wc='win';wl='sí';} else if(t.won==='0'){wc='lose';wl='no';}
+        const url=`https://polymarket.com/event/${t.slug}`;
+        return `<tr><td><a href="${url}" target="_blank">${etRange(t.ws)}</a></td>`+
+          `<td>${t.fav?`<span class="pill ${side}">${t.fav}</span>`:'—'}</td>`+
+          `<td>${t.ask?(+t.ask*100).toFixed(0)+'¢':'—'}</td>`+
+          `<td class="muted">${t.px?(+t.px).toFixed(0):'—'}/${t.ema21?(+t.ema21).toFixed(0):'—'}</td>`+
+          `<td><span class="pill ${alC}">${alL}</span></td>`+
+          `<td><span class="pill ${stC}">${stL}</span></td>`+
+          `<td><span class="pill ${wc}">${wl}</span></td></tr>`;
+      }).join('');
+    }
+  }catch(e){$('dot').className='dot off';}
+}
+refresh(); setInterval(refresh,15000);
+</script>
+</body>
+</html>
