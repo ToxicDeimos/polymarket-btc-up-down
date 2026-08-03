@@ -74,10 +74,11 @@ def winner_clob(cid):
     return None
 
 def ema_state():
-    """(px_actual, EMA21) de BTC 1m Binance, o (None, None). px vs EMA21 = ¿tendencia confirma?"""
-    d = get("https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1m&limit=60")
-    if not isinstance(d, list) or len(d) < EMA_N + 1: return None, None
-    closes = [float(c[4]) for c in d]
+    """(px, EMA21) de BTC 1m Binance sobre velas CERRADAS (descarta la vela en formación, como el
+    backtest que validó la regla). px = último close cerrado; EMA21 sobre esos closes. o (None, None)."""
+    d = get("https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1m&limit=80")
+    if not isinstance(d, list) or len(d) < EMA_N + 2: return None, None
+    closes = [float(c[4]) for c in d[:-1]]      # [:-1] = descarta la última vela (aún abierta)
     k = 2 / (EMA_N + 1); e = closes[0]
     for p in closes[1:]: e = p * k + e * (1 - k)
     return closes[-1], e
