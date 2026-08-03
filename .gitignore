@@ -28,3 +28,4 @@ favorite_paper_log.csv
 # caché de sizing (generada por favorite_sizing.py en la Pi)
 research/favorite_sizing_*.json
 favorite_paper_*_log.csv
+ema_favorite_log.csv
