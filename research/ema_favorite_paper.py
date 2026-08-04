@@ -9,9 +9,17 @@ edge es MAYOR cuanto más barato/incierto el favorito (la confirmación de tende
 La EMA es, en esencia, el MOMENTUM hecho bien: comprar el líder solo cuando la tendencia 1m lo confirma
 (evitando los rebotes que revierten). Por eso el momentum crudo moría y esto no.
 
+Refinamiento 2026-08-04 (market-wide, libro completo del lab, resuelto CLOB — SIN survivorship): dentro de
+alineado, la FUERZA de la tendencia manda. margin = (px−EMA9)/EMA9 en bps a favor del favorito: débil Q0-Q1
+(<~1.5 bps) gana 75-84%, fuerte Q2+ 91-98%, con ask PLANO (~68¢) = el mercado no cobra la fuerza (mispricing).
+Por eso comprar solo ALINEADO no basta (nuestro forward compraba las débiles y caía a ~64%): hay que exigir
+FUERZA. El bot compra solo si margin ≥ MARGIN_MIN; las alineadas DÉBILES van a sombra "weak" (deben ganar
+menos → validan el umbral).
+
 Este bot lo confirma EN VIVO (paper): a 240s mira el favorito (mayor ask) en 52-82¢, calcula precio vs EMA9
-de Binance 1m, y COMPRA solo si está ALINEADO. Los CONTRA se registran en SOMBRA (deben perder → validan la
-regla). Métrica: NETO de comisión taker Polymarket crypto = 0.07·p·(1−p). Solo necesita klines 1m (sin lab).
+de Binance 1m, y COMPRA solo si está ALINEADO CON FUERZA (margin ≥ MARGIN_MIN). Los CONTRA (rebote) y las
+DÉBILES se registran en SOMBRA (deben perder/ganar menos → validan la regla). Métrica: NETO de comisión taker
+Polymarket crypto = 0.07·p·(1−p). Solo necesita klines 1m (sin lab).
 
     python3 ema_favorite_paper.py            # 24/7 (systemd)
     python3 ema_favorite_paper.py --analyze  # veredicto: alineado vs contra, neto de fee
@@ -26,9 +34,12 @@ LO, HI = 0.52, 0.82        # zona incierta. El edge EMA es MAYOR cuanto más bar
 EMA_N  = 9                 # EMA sobre closes 1m. Barrido 2026-08-03 (10.659 fills, train/test): px>EMA9 gana
                            # a EMA21/50/100 y crossovers → +24.7/+22pp neto, win 91%, fill 69%. Predecimos
                            # los próximos 60s → la tendencia MÁS reciente (9m) predice mejor que una lenta.
+MARGIN_MIN = 1.5           # bps mínimos de (px−EMA9)/EMA9 a favor del favorito para COMPRAR. Market-wide
+                           # (2026-08-04, 19 días de libro, CLOB): débil <1.5bps gana 75-84%, fuerte ≥1.5bps
+                           # gana 91-98%, ask plano → comprar solo fuerte. Las débiles a sombra "weak".
 MIN_VERDICT = 80           # fills comprados para veredicto (el efecto es ENORME → confirma rápido)
 LOG = os.path.join(os.path.dirname(__file__), "ema_favorite_log.csv")
-HEADER = ["ws", "slug", "fav", "ask", "ask2", "aligned", "px", "ema", "status", "winner", "won", "cid"]
+HEADER = ["ws", "slug", "fav", "ask", "ask2", "aligned", "px", "ema", "margin", "status", "winner", "won", "cid"]
 
 def FEE(p): return 0.07 * p * (1 - p)
 
@@ -93,7 +104,7 @@ def backfill_pending(verbose=False):
     n = 0
     for r in rows:
         if r.get("winner") or not r.get("cid") or not r.get("fav"): continue
-        if r.get("status") not in ("bought", "against"): continue
+        if r.get("status") not in ("bought", "against", "weak"): continue
         w = winner_clob(r["cid"])
         if w is None: continue
         r["winner"] = w; r["won"] = "1" if w == r["fav"] else "0"; n += 1; time.sleep(0.1)
@@ -114,20 +125,22 @@ def run_window(win):
     px, ema = ema_state()
     if px is None:
         print("   sin EMA (Binance no responde) — skip esta ventana"); return
-    aligned = 1 if ((px > ema) == (fav == "Up")) else 0
+    margin = (1 if fav == "Up" else -1) * (px - ema) / ema * 1e4   # bps a favor del favorito; >0 = alineado
+    aligned = 1 if margin > 0 else 0
     if not (LO <= ask <= HI):
-        log([ws, slug, fav, round(ask, 3), round(ask2, 3), aligned, round(px, 1), round(ema, 1), "skip", "", "", cid])
+        log([ws, slug, fav, round(ask, 3), round(ask2, 3), aligned, round(px, 1), round(ema, 1), round(margin, 2), "skip", "", "", cid])
         print(f"   skip: favorito {fav} @ {ask:.2f} fuera de [{LO},{HI}]"); return
-    status = "bought" if aligned else "against"   # alineado → COMPRA; contra → SOMBRA (debe perder)
+    # alineado FUERTE → COMPRA; alineado DÉBIL → sombra "weak"; contra → sombra "against". Las dos sombras validan.
+    status = "against" if not aligned else ("bought" if margin >= MARGIN_MIN else "weak")
     while now() < ws + 300 + 5: time.sleep(5)      # resolver por CLOB (Chainlink)
     wside = None; t0 = now()
     while now() < t0 + 360 and wside is None:
         wside = winner_clob(cid)
         if wside is None: time.sleep(15)
     won = "" if wside is None else (1 if wside == fav else 0)
-    log([ws, slug, fav, round(ask, 3), round(ask2, 3), aligned, round(px, 1), round(ema, 1), status, wside or "", won, cid])
-    tag = "BUY ✓alineado" if aligned else "sombra ✗contra"
-    print(f"   {tag}  {fav} @ {ask:.3f}  px{px:.0f} ema{ema:.0f}  → winner {wside or 'PEND'} | won {won}")
+    log([ws, slug, fav, round(ask, 3), round(ask2, 3), aligned, round(px, 1), round(ema, 1), round(margin, 2), status, wside or "", won, cid])
+    tag = {"bought": "BUY ✓fuerte", "weak": "sombra ~débil", "against": "sombra ✗contra"}[status]
+    print(f"   {tag}  {fav} @ {ask:.3f}  px{px:.0f} ema{ema:.0f} margin{margin:+.1f}bps  → winner {wside or 'PEND'} | won {won}")
 
 def analyze():
     if not os.path.exists(LOG): print("sin log"); return
@@ -149,9 +162,11 @@ def analyze():
         return {"n": n, "wr": wr, "ap": ap, "net": net, "se": se}
 
     B = [r for r in rows if r["status"] == "bought"]
+    W = [r for r in rows if r["status"] == "weak"]
     A = [r for r in rows if r["status"] == "against"]
-    print("\nEDGE en 52-82¢ con filtro EMA9 1m (NETO de comisión taker):")
-    b = rep("COMPRADO (✓alineado)", B)
+    print(f"\nEDGE en 52-82¢ con filtro EMA9 1m + margin≥{MARGIN_MIN}bps (NETO de comisión taker):")
+    b = rep("COMPRADO (✓fuerte)", B)
+    w = rep("SOMBRA (~débil)", W)          # alineado pero flojo → debe ganar MENOS que el comprado (75-84%)
     a = rep("SOMBRA (✗contra)", A)
     print("  desglose del COMPRADO por banda (edge esperado mayor en la barata):")
     for lo, hi, lab in [(0.52, 0.62, "52-62¢"), (0.62, 0.72, "62-72¢"), (0.72, 0.821, "72-82¢")]:
