@@ -41,7 +41,7 @@
 
 <div class="header">
   <div class="dot off" id="dot"></div>
-  <h1>EMA Favorite Bot · BTC <span class="muted" style="font-weight:400">(DRY · exp #17 · favorito 52-82¢ filtrado por EMA21 1m)</span></h1>
+  <h1>EMA Favorite Bot · BTC <span class="muted" style="font-weight:400">(DRY · exp #17 · favorito 52-82¢ filtrado por EMA9 1m)</span></h1>
   <span id="last-update">—</span>
 </div>
 
@@ -64,7 +64,7 @@
       <tbody id="rule-body"></tbody>
     </table>
     <div class="sub" style="margin-top:8px">
-      A 240s, el bot mira el favorito (mayor ask) en <b>52-82¢</b> y calcula <b>precio vs EMA21</b> de Binance 1m.
+      A 240s, el bot mira el favorito (mayor ask) en <b>52-82¢</b> y calcula <b>precio vs EMA9</b> de Binance 1m.
       Si el precio está del lado del favorito (<b>tendencia confirma</b>) → <span class="green">COMPRA</span>.
       Si va en contra (rebote) → <span class="red">SOMBRA</span> (no opera, pero se resuelve para validar que pierde).
       <b>NETO</b> = win − ask − comisión (0.07·p·(1−p)). En los datos de los ganadores: alineado +16 a +24pp, contra ~−27pp.
@@ -98,7 +98,7 @@
   <div class="card">
     <h2>Últimas ventanas</h2>
     <table>
-      <thead><tr><th>ventana (ET)</th><th>favorito</th><th>ask</th><th>EMA</th><th>px vs ema21</th><th>estado</th><th>ganó</th></tr></thead>
+      <thead><tr><th>ventana (ET)</th><th>favorito</th><th>ask</th><th>EMA</th><th>px vs ema9</th><th>estado</th><th>ganó</th></tr></thead>
       <tbody id="trades-body"></tbody>
     </table>
     <div class="sub" id="trades-empty" style="display:none;margin-top:8px">Sin ventanas aún.</div>
@@ -185,7 +185,7 @@ async function refresh(){
         return `<tr><td><a href="${url}" target="_blank">${etRange(t.ws)}</a></td>`+
           `<td>${t.fav?`<span class="pill ${side}">${t.fav}</span>`:'—'}</td>`+
           `<td>${t.ask?(+t.ask*100).toFixed(0)+'¢':'—'}</td>`+
-          `<td class="muted">${t.px?(+t.px).toFixed(0):'—'}/${t.ema21?(+t.ema21).toFixed(0):'—'}</td>`+
+          `<td class="muted">${t.px?(+t.px).toFixed(0):'—'}/${t.ema?(+t.ema).toFixed(0):'—'}</td>`+
           `<td><span class="pill ${alC}">${alL}</span></td>`+
           `<td><span class="pill ${stC}">${stL}</span></td>`+
           `<td><span class="pill ${wc}">${wl}</span></td></tr>`;

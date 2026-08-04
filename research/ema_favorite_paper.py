@@ -1,14 +1,15 @@
 """
-ema_favorite_paper.py — EXP #17 (DRY): favorito 52-82¢ FILTRADO por tendencia EMA21 (1m de Binance).
+ema_favorite_paper.py — EXP #17 (DRY): favorito 52-82¢ FILTRADO por tendencia EMA9 (1m de Binance).
 
-Hallazgo 2026-08-03: el separador que GENERALIZA (train/test, único en todo el proyecto) es precio vs EMA21
-en 1m, y el edge es MAYOR cuanto más barato/incierto el favorito (la confirmación de tendencia aporta más):
+Hallazgo 2026-08-03: el separador que GENERALIZA (train/test, único en todo el proyecto) es precio vs EMA en
+1m — barrido de periodos: EMA9 gana (px>EMA9 → +24.7/+22pp neto, win 91%, fill 69%; bate EMA21/50/100). El
+edge es MAYOR cuanto más barato/incierto el favorito (la confirmación de tendencia aporta más):
    ALINEADO (precio del lado del favorito):  52-62¢ +23.9pp · 62-72¢ +17.6pp · 72-82¢ +16.2pp  NETO de fee
    CONTRA (rebote contra-tendencia):         ~−27pp NETO en todas las bandas
 La EMA es, en esencia, el MOMENTUM hecho bien: comprar el líder solo cuando la tendencia 1m lo confirma
 (evitando los rebotes que revierten). Por eso el momentum crudo moría y esto no.
 
-Este bot lo confirma EN VIVO (paper): a 240s mira el favorito (mayor ask) en 62-82¢, calcula precio vs EMA21
+Este bot lo confirma EN VIVO (paper): a 240s mira el favorito (mayor ask) en 52-82¢, calcula precio vs EMA9
 de Binance 1m, y COMPRA solo si está ALINEADO. Los CONTRA se registran en SOMBRA (deben perder → validan la
 regla). Métrica: NETO de comisión taker Polymarket crypto = 0.07·p·(1−p). Solo necesita klines 1m (sin lab).
 
@@ -22,10 +23,12 @@ import urllib.request, json, time, csv, os, sys, math
 ENTRY  = 240
 LO, HI = 0.52, 0.82        # zona incierta. El edge EMA es MAYOR cuanto más barato (52-62¢ +23.9pp neto vs
                            # 72-82¢ +16.2pp): más incierto = la confirmación de tendencia aporta más.
-EMA_N  = 21                # EMA sobre closes 1m
+EMA_N  = 9                 # EMA sobre closes 1m. Barrido 2026-08-03 (10.659 fills, train/test): px>EMA9 gana
+                           # a EMA21/50/100 y crossovers → +24.7/+22pp neto, win 91%, fill 69%. Predecimos
+                           # los próximos 60s → la tendencia MÁS reciente (9m) predice mejor que una lenta.
 MIN_VERDICT = 80           # fills comprados para veredicto (el efecto es ENORME → confirma rápido)
 LOG = os.path.join(os.path.dirname(__file__), "ema_favorite_log.csv")
-HEADER = ["ws", "slug", "fav", "ask", "ask2", "aligned", "px", "ema21", "status", "winner", "won", "cid"]
+HEADER = ["ws", "slug", "fav", "ask", "ask2", "aligned", "px", "ema", "status", "winner", "won", "cid"]
 
 def FEE(p): return 0.07 * p * (1 - p)
 
@@ -74,8 +77,8 @@ def winner_clob(cid):
     return None
 
 def ema_state():
-    """(px, EMA21) de BTC 1m Binance sobre velas CERRADAS (descarta la vela en formación, como el
-    backtest que validó la regla). px = último close cerrado; EMA21 sobre esos closes. o (None, None)."""
+    """(px, EMA) de BTC 1m Binance sobre velas CERRADAS (descarta la vela en formación, como el
+    backtest que validó la regla). px = último close cerrado; EMA_N sobre esos closes. o (None, None)."""
     d = get("https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1m&limit=80")
     if not isinstance(d, list) or len(d) < EMA_N + 2: return None, None
     closes = [float(c[4]) for c in d[:-1]]      # [:-1] = descarta la última vela (aún abierta)
@@ -108,12 +111,12 @@ def run_window(win):
     if au is None or ad is None: return
     fav = "Up" if au > ad else "Down"
     ask = au if fav == "Up" else ad; ask2 = ad if fav == "Up" else au
-    px, e21 = ema_state()
+    px, ema = ema_state()
     if px is None:
         print("   sin EMA (Binance no responde) — skip esta ventana"); return
-    aligned = 1 if ((px > e21) == (fav == "Up")) else 0
+    aligned = 1 if ((px > ema) == (fav == "Up")) else 0
     if not (LO <= ask <= HI):
-        log([ws, slug, fav, round(ask, 3), round(ask2, 3), aligned, round(px, 1), round(e21, 1), "skip", "", "", cid])
+        log([ws, slug, fav, round(ask, 3), round(ask2, 3), aligned, round(px, 1), round(ema, 1), "skip", "", "", cid])
         print(f"   skip: favorito {fav} @ {ask:.2f} fuera de [{LO},{HI}]"); return
     status = "bought" if aligned else "against"   # alineado → COMPRA; contra → SOMBRA (debe perder)
     while now() < ws + 300 + 5: time.sleep(5)      # resolver por CLOB (Chainlink)
@@ -122,9 +125,9 @@ def run_window(win):
         wside = winner_clob(cid)
         if wside is None: time.sleep(15)
     won = "" if wside is None else (1 if wside == fav else 0)
-    log([ws, slug, fav, round(ask, 3), round(ask2, 3), aligned, round(px, 1), round(e21, 1), status, wside or "", won, cid])
+    log([ws, slug, fav, round(ask, 3), round(ask2, 3), aligned, round(px, 1), round(ema, 1), status, wside or "", won, cid])
     tag = "BUY ✓alineado" if aligned else "sombra ✗contra"
-    print(f"   {tag}  {fav} @ {ask:.3f}  px{px:.0f} ema{e21:.0f}  → winner {wside or 'PEND'} | won {won}")
+    print(f"   {tag}  {fav} @ {ask:.3f}  px{px:.0f} ema{ema:.0f}  → winner {wside or 'PEND'} | won {won}")
 
 def analyze():
     if not os.path.exists(LOG): print("sin log"); return
@@ -147,7 +150,7 @@ def analyze():
 
     B = [r for r in rows if r["status"] == "bought"]
     A = [r for r in rows if r["status"] == "against"]
-    print("\nEDGE en 52-82¢ con filtro EMA21 1m (NETO de comisión taker):")
+    print("\nEDGE en 52-82¢ con filtro EMA9 1m (NETO de comisión taker):")
     b = rep("COMPRADO (✓alineado)", B)
     a = rep("SOMBRA (✗contra)", A)
     print("  desglose del COMPRADO por banda (edge esperado mayor en la barata):")
@@ -169,7 +172,7 @@ def analyze():
 def main():
     if "--analyze" in sys.argv: analyze(); return
     if "--resolve" in sys.argv: print(f"rellenadas {backfill_pending(verbose=True)}"); return
-    print("=" * 62 + f"\n  EMA-FAVORITE PAPER (DRY) — favorito 62-82¢ filtrado por EMA21 1m\n" + "=" * 62)
+    print("=" * 62 + f"\n  EMA-FAVORITE PAPER (DRY) — favorito 52-82¢ filtrado por EMA9 1m\n" + "=" * 62)
     n = backfill_pending(verbose=True)
     if n: print(f"backfill inicial: {n}")
     seen = set(); last_bf = now()

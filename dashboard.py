@@ -1,5 +1,5 @@
 """
-Panel web — ema-favorite-paper (favorito 52-82¢ filtrado por EMA21 1m).
+Panel web — ema-favorite-paper (favorito 52-82¢ filtrado por EMA9 1m).
 Uso: python dashboard.py  →  http://localhost:5000
 """
 import csv
@@ -95,7 +95,7 @@ def api_ema():
 
     def trade(r):
         return {"ws": int(r["ws"]), "slug": r.get("slug"), "fav": r.get("fav"), "ask": r.get("ask"),
-                "aligned": r.get("aligned"), "px": r.get("px"), "ema21": r.get("ema21"),
+                "aligned": r.get("aligned"), "px": r.get("px"), "ema": r.get("ema"),
                 "status": r.get("status"), "winner": r.get("winner"), "won": r.get("won")}
     shown = [r for r in rows if r.get("status") in ("bought", "against")][-80:][::-1]
 
