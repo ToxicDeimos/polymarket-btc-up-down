@@ -189,7 +189,8 @@ def main():
         win = reso.get(f["cid"], "")
         if win not in ("Up", "Down"):
             continue
-        ws = int(f["ws"]); e = ws + 240
+        ws = int(f["ws"]); e = ws + 240 - 60   # -60: SIN look-ahead. Klines keyed por openTime → el precio a
+        #  240s = close de la vela [ws+180,ws+240) = kl[ws+180]. Antes usábamos kl[ws+240]=cierre de ventana (bug).
         px = at(cls, e); evs = {N: at(E[N], e) for N in EMAS_TEST}
         if px is None or any(v is None for v in evs.values()):
             continue
