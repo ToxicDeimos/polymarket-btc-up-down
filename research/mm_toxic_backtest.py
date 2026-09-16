@@ -4,7 +4,11 @@ comparando 5m vs 15m. La pieza NUEVA que el simulador ingenuo no tenía y un MM 
 cuando entra un trade agresor GRANDE (size >= percentil), RETIRO el lado que me llenaría en adverso
 durante COOLDOWN s (el flujo informado llega en oleadas → esquivo las réplicas, no la primera copia).
 
-Pregunta 1: ¿la protección cruza el PnL (cota superior) a +EV, o el MM desde la Pi está muerto?
+Además compara el SETTLEMENT del inventario sobrante: HOLD (aguantar a resolución) vs FLAT (deshacerlo
+al bid en el cierre pagando fee taker = irse a casa plano). El diagnóstico decía que TODA la pérdida es
+la cola direccional del inventario atascado, no la captura del spread → FLAT debería borrarla.
+
+Pregunta 1: ¿FLAT (irse plano) cruza el PnL (cota superior) a +EV, o el MM desde la Pi está muerto?
 Pregunta 2: ¿es más eficiente en 5m o en 15m? (más round-trips, más plano, mejor PnL)
 
 Datos del lab (mismos que usa mm_ws, así el número es COMPARABLE = cota superior, asumo ganar la cola):
@@ -91,8 +95,9 @@ def load_trades():
     return T
 
 
-def run_mm(book, trs, fav_ask, won, toxic_size, cooldown):
-    """book: sorted [(ts,bid,ask)]; trs: sorted [(ts,side,price,size)]. toxic_size=None → sin protección."""
+def run_mm(book, trs, toxic_size, cooldown):
+    """book: sorted [(ts,bid,ask)]; trs: sorted [(ts,side,price,size)]. toxic_size=None → sin protección.
+    Devuelve las piezas crudas (cash, inv…); el settlement (hold vs flat) se calcula fuera."""
     inv = 0; cash = 0.0; buys = sells = rt = 0; maxinv = 0
     bid_pull = ask_pull = 0
     bi = 0; bid = ask = my_bid = my_ask = None
@@ -115,8 +120,7 @@ def run_mm(book, trs, fav_ask, won, toxic_size, cooldown):
         if toxic_size is not None and size >= toxic_size:   # protege los prints siguientes
             if side == "SELL": bid_pull = ts + cooldown     # venta informada → dejo de comprar
             elif side == "BUY": ask_pull = ts + cooldown    # compra informada → dejo de vender
-    pnl = (cash + inv * won + (buys + sells) * reb(fav_ask)) * 100
-    return dict(buys=buys, sells=sells, rt=rt, end_inv=inv, maxinv=maxinv, pnl=pnl)
+    return dict(cash=cash, buys=buys, sells=sells, rt=rt, end_inv=inv, maxinv=maxinv)
 
 
 def main():
@@ -180,44 +184,54 @@ def main():
                 cw.writerow([cid, w])
         return w
 
-    # PASO 2: resolver + simular baseline (solo skew) y protegido (skew + tóxico)
+    # PASO 2: resolver + simular. Los fills son IDÉNTICOS entre HOLD y FLAT (solo cambia el settlement
+    # del inventario sobrante): HOLD = aguantar a resolución (inv*won, lo de antes); FLAT = deshacerlo
+    # cruzando el spread en el cierre (vender al bid pagando fee taker) = disciplina "irse a casa plano".
     print(f"\nresolviendo {len(jobs)} ventanas por CLOB (cacheado)…")
-    agg = {(v, m): {"n": 0, "rt": 0, "flat": 0, "maxinv": 0, "pnl": 0.0, "pos": 0, "buys": 0}
-           for v in ("5m", "15m") for m in ("base", "prot")}
+    TAKERF = 0.07
+    def takerfee(p): return TAKERF * p * (1 - p)
+    agg = {v: {"n": 0, "rt": 0, "flat": 0, "maxinv": 0, "hold": 0.0, "flt": 0.0, "pflt": 0.0,
+               "flt_pos": 0, "hold_pos": 0} for v in ("5m", "15m")}
     done = 0
     for j in jobs:
         win = resolve(j["cid"])
         if win not in ("Up", "Down"): continue
         won = 1 if j["fav"] == win else 0
-        for m, tsz in (("base", None), ("prot", toxic[j["v"]])):
-            r = run_mm(j["book"], j["trs"], j["fav_ask"], won, tsz, COOLDOWN)
-            a = agg[(j["v"], m)]
-            a["n"] += 1; a["rt"] += r["rt"]; a["flat"] += (1 if r["end_inv"] == 0 else 0)
-            a["maxinv"] += r["maxinv"]; a["pnl"] += r["pnl"]; a["pos"] += (1 if r["pnl"] > 0 else 0)
-            a["buys"] += r["buys"]
+        last_bid = j["book"][-1][1]; fa = j["fav_ask"]
+        rb = run_mm(j["book"], j["trs"], None, COOLDOWN)              # solo skew
+        rp = run_mm(j["book"], j["trs"], toxic[j["v"]], COOLDOWN)    # skew + protección tóxica
+        def rebs(r): return (r["buys"] + r["sells"]) * reb(fa)
+        exit_unit = last_bid - takerfee(last_bid)                    # deshacer 1 share como taker al bid
+        pnl_hold = (rb["cash"] + rb["end_inv"] * won + rebs(rb)) * 100
+        pnl_flat = (rb["cash"] + rb["end_inv"] * exit_unit + rebs(rb)) * 100
+        pnl_pflt = (rp["cash"] + rp["end_inv"] * exit_unit + rebs(rp)) * 100
+        a = agg[j["v"]]
+        a["n"] += 1; a["rt"] += rb["rt"]; a["flat"] += (1 if rb["end_inv"] == 0 else 0)
+        a["maxinv"] += rb["maxinv"]
+        a["hold"] += pnl_hold; a["flt"] += pnl_flat; a["pflt"] += pnl_pflt
+        a["hold_pos"] += (1 if pnl_hold > 0 else 0); a["flt_pos"] += (1 if pnl_flat > 0 else 0)
         done += 1
         if done % 200 == 0: print(f"   … {done}/{len(jobs)}")
 
     # informe
-    print("\n" + "=" * 78)
-    print(f"  MM skew{'':2} vs skew+tóxico  ·  p{int(TOXIC_PCT*100)} / cooldown {COOLDOWN}s  ·  PnL = COTA SUPERIOR")
-    print("=" * 78)
-    print(f"{'':14}{'N':>6}{'RT/vent':>9}{'plano%':>8}{'máxinv':>8}{'PnL medio':>11}{'PnL>0%':>8}")
+    print("\n" + "=" * 82)
+    print(f"  MM skew · settlement HOLD vs FLAT (irse plano) vs prot+flat · PnL = COTA SUPERIOR")
+    print("=" * 82)
+    print(f"{'':6}{'N':>6}{'RT/vent':>9}{'plano%':>8}{'máxinv':>8}{'PnL hold':>11}{'PnL flat':>11}{'prot+flat':>11}")
     for v in ("5m", "15m"):
-        for m, lbl in (("base", f"{v} baseline"), ("prot", f"{v} protegido")):
-            a = agg[(v, m)]; n = a["n"]
-            if not n: print(f"{lbl:14}{'—':>6}"); continue
-            print(f"{lbl:14}{n:>6}{a['rt']/n:>9.1f}{100*a['flat']/n:>7.0f}%"
-                  f"{a['maxinv']/n:>8.2f}{a['pnl']/n:>+10.2f}pp{100*a['pos']/n:>7.0f}%")
-    print("\nlectura: 'plano%' y 'máxinv' = FIABLES (¿controla el inventario?). 'PnL' = cota superior")
-    print("(asume ganar la cola en cada fill) → el real es una fracción. La comparación 5m vs 15m y")
-    print("baseline vs protegido es lo que vale: ¿la protección sube el PnL y en qué timeframe rinde más?")
+        a = agg[v]; n = a["n"]
+        if not n: print(f"{v:6}{'—':>6}"); continue
+        print(f"{v:6}{n:>6}{a['rt']/n:>9.1f}{100*a['flat']/n:>7.0f}%{a['maxinv']/n:>8.2f}"
+              f"{a['hold']/n:>+10.2f}{a['flt']/n:>+11.2f}{a['pflt']/n:>+11.2f}")
+    print("\nlectura: 'plano%'/'máxinv' = mecánica fiable. Los 3 PnL son COTA SUPERIOR (asume ganar la cola).")
+    print("HOLD = aguantar inventario a resolución (lo de antes). FLAT = deshacerlo al bid en el cierre")
+    print("pagando fee taker (irse plano). prot+flat = protección tóxica encima. ¿FLAT borra la cola −EV?")
     for v in ("5m", "15m"):
-        b, pr = agg[(v, "base")], agg[(v, "prot")]
-        if b["n"] and pr["n"]:
-            d = pr["pnl"] / pr["n"] - b["pnl"] / b["n"]
-            print(f"  Δ protección {v}: {d:+.2f}pp/ventana "
-                  f"({'ayuda' if d > 0 else 'no ayuda'})")
+        a = agg[v]; n = a["n"]
+        if n:
+            print(f"  {v}: Δ flat vs hold {a['flt']/n - a['hold']/n:+.2f}pp · "
+                  f"Δ prot+flat vs hold {a['pflt']/n - a['hold']/n:+.2f}pp · "
+                  f"flat PnL>0 {100*a['flt_pos']/n:.0f}% (hold {100*a['hold_pos']/n:.0f}%)")
 
 
 if __name__ == "__main__":
