@@ -97,11 +97,14 @@ def load_trades():
     return T
 
 
-def run_mm(book, trs, toxic_size, cooldown, depth=0.0):
+def run_mm(book, trs, toxic_size, cooldown, depth=0.0, stop=None):
     """book: sorted [(ts,bid,ask)]; trs: sorted [(ts,side,price,size)]. toxic_size=None → sin protección.
     depth = cuántos ¢ POR DEBAJO del bid (y por encima del ask) descanso → solo me lleno en OVERSHOOTS.
-    Devuelve las piezas crudas (cash, inv…); el settlement (hold vs flat) se calcula fuera."""
+    stop = si el bid cae 'stop'¢ bajo mi entrada media, LIQUIDO al bid (taker) y me quedo plano el resto de
+    la ventana (corta la cola izquierda: favorito→0 con inventario). stop=None → sin stop.
+    Devuelve las piezas crudas (cash, inv…); el settlement se calcula fuera."""
     inv = 0; cash = 0.0; buys = sells = rt = 0; maxinv = 0; buysum = 0.0
+    pos_cost = 0.0; halted = False; TAKERF = 0.07
     bid_pull = ask_pull = 0
     bi = 0; bid = ask = my_bid = my_ask = None
 
@@ -113,17 +116,20 @@ def run_mm(book, trs, toxic_size, cooldown, depth=0.0):
     for ts, side, price, size in trs:
         while bi < len(book) and book[bi][0] <= ts:
             _, bid, ask = book[bi]; bi += 1
+        # STOP: bid por debajo de (entrada media − stop) → liquido al bid pagando fee taker y me quedo plano
+        if stop is not None and not halted and inv > 0 and bid is not None and bid <= pos_cost / inv - stop:
+            cash += inv * (bid - TAKERF * bid * (1 - bid)); sells += inv; rt += inv
+            inv = 0; pos_cost = 0.0; halted = True
         requote()
-        if my_bid is not None and my_ask is not None:
-            # fill bajo el estado de retirada actual (la 1ª copia tóxica NO se puede esquivar; sí las réplicas)
+        if not halted and my_bid is not None and my_ask is not None:
             if side == "SELL" and price <= my_bid and inv < MAXINV and ts >= bid_pull:
-                inv += 1; cash -= my_bid; buysum += my_bid; buys += 1; maxinv = max(maxinv, inv); requote()
+                inv += 1; cash -= my_bid; pos_cost += my_bid; buysum += my_bid; buys += 1; maxinv = max(maxinv, inv); requote()
             elif side == "BUY" and price >= my_ask and inv > 0 and ts >= ask_pull:
-                inv -= 1; cash += my_ask; sells += 1; rt += 1; requote()
+                avg = pos_cost / inv; inv -= 1; cash += my_ask; pos_cost -= avg; sells += 1; rt += 1; requote()
         if toxic_size is not None and size >= toxic_size:   # protege los prints siguientes
             if side == "SELL": bid_pull = ts + cooldown     # venta informada → dejo de comprar
             elif side == "BUY": ask_pull = ts + cooldown    # compra informada → dejo de vender
-    return dict(cash=cash, buys=buys, sells=sells, rt=rt, end_inv=inv, maxinv=maxinv, buysum=buysum)
+    return dict(cash=cash, buys=buys, sells=sells, rt=rt, end_inv=inv, maxinv=maxinv, buysum=buysum, halted=halted)
 
 
 def main():
@@ -199,15 +205,17 @@ def main():
     jobs = [j for j in jobs if j["won"] is not None]
     print(f"  ventanas con ganador: {len(jobs)}")
 
-    DEPTHS = (0.0, 0.02, 0.03, 0.04, 0.05)
-    # recolectar por (v, depth) la lista cruda: (ws, pnl, buys, buysum, won)
-    data = {(v, d): [] for v in ("5m", "15m") for d in DEPTHS}
+    # CONFIGS fijadas A PRIORI (no las que mejor salieron = eso sería p-hacking): profundidad × stop.
+    # depth 3¢/5¢ (cercanas a los ~4¢ de 13mm-wrench); stop = None (sin), 8¢, 15¢ bajo la entrada media.
+    CFG = [(0.03, None), (0.03, 0.08), (0.03, 0.15), (0.05, None), (0.05, 0.08), (0.05, 0.15)]
+    def lbl(d, s): return f"{int(d*100)}¢/{'∞' if s is None else str(int(s*100))+'¢'}"
+    data = {(v, ci): [] for v in ("5m", "15m") for ci in range(len(CFG))}
     for j in jobs:
         won = j["won"]; fa = j["fav_ask"]
-        for d in DEPTHS:
-            r = run_mm(j["book"], j["trs"], None, COOLDOWN, d)
+        for ci, (d, s) in enumerate(CFG):
+            r = run_mm(j["book"], j["trs"], None, COOLDOWN, d, s)
             pnl = (r["cash"] + r["end_inv"] * won + (r["buys"] + r["sells"]) * reb(fa)) * 100
-            data[(j["v"], d)].append((j["ws"], pnl, r["buys"], r["buysum"], won))
+            data[(j["v"], ci)].append((j["ws"], pnl, r["buys"], r["buysum"], won, r["halted"]))
 
     def mean(xs): return sum(xs) / len(xs) if xs else 0.0
     def median(xs):
@@ -216,57 +224,58 @@ def main():
     mids = {v: sorted(j["ws"] for j in jobs if j["v"] == v)[max(0, sum(1 for j in jobs if j["v"] == v) // 2 - 1)]
             for v in ("5m", "15m") if any(j["v"] == v for j in jobs)}
 
-    # TABLA 1 — barrido (headline)
-    print("\n" + "=" * 90)
-    print("  MM skew + HOLD · BARRIDO DE PROFUNDIDAD (my_bid = best_bid − DEPTH) · PnL = COTA SUPERIOR")
-    print("=" * 90)
-    print(f"{'':5}{'DEPTH':>6}{'N':>7}{'con-fill':>9}{'buys':>7}{'precio':>8}{'fav-gana%':>11}{'PnL/vent':>11}{'PnL/fill':>10}")
+    # TABLA 1 — barrido depth×stop (headline)
+    print("\n" + "=" * 92)
+    print("  MM profundo + STOP (corta cola izquierda) · config = DEPTH/STOP · PnL = COTA SUPERIOR")
+    print("=" * 92)
+    print(f"{'':5}{'cfg':>9}{'N':>7}{'con-fill':>9}{'%stop':>7}{'precio':>8}{'fav-gana%':>11}{'PnL/vent':>11}{'PnL/fill':>10}")
     for v in ("5m", "15m"):
-        for d in DEPTHS:
-            rows = data[(v, d)]; n = len(rows)
+        for ci, (d, s) in enumerate(CFG):
+            rows = data[(v, ci)]; n = len(rows)
             if not n: continue
             fill = [r for r in rows if r[2] > 0]; fl = len(fill)
             tb = sum(r[2] for r in fill); bs = sum(r[3] for r in fill)
             wr = 100 * sum(r[4] for r in fill) / fl if fl else 0
-            print(f"{v:5}{d*100:>5.0f}¢{n:>7}{fl:>9}{tb:>7}{(bs/tb if tb else 0):>8.3f}{wr:>10.0f}%"
+            stp = 100 * sum(1 for r in fill if r[5]) / fl if fl else 0
+            print(f"{v:5}{lbl(d,s):>9}{n:>7}{fl:>9}{stp:>6.0f}%{(bs/tb if tb else 0):>8.3f}{wr:>10.0f}%"
                   f"{mean([r[1] for r in rows]):>+10.2f}{(mean([r[1] for r in fill]) if fl else 0):>+10.2f}")
         print()
 
     # GATE 1 — train/test temporal
-    print("=" * 90)
+    print("=" * 92)
     print("  GATE 1 — TRAIN/TEST TEMPORAL (parte por fecha; el edge debe aguantar en la mitad OOS)")
-    print("=" * 90)
-    print(f"{'':5}{'DEPTH':>6}{'N_train':>9}{'PnL_train':>11}{'N_test':>9}{'PnL_test':>11}{'  OOS':>7}")
+    print("=" * 92)
+    print(f"{'':5}{'cfg':>9}{'N_train':>9}{'PnL_train':>11}{'N_test':>9}{'PnL_test':>11}{'  OOS':>7}")
     for v in ("5m", "15m"):
-        for d in DEPTHS:
-            rows = data[(v, d)]
+        for ci, (d, s) in enumerate(CFG):
+            rows = data[(v, ci)]
             if not rows: continue
             tr = [p for ws, p, *_ in rows if ws < mids[v]]; te = [p for ws, p, *_ in rows if ws >= mids[v]]
             mtr, mte = mean(tr), mean(te)
             ok = "✓" if (mtr > 0 and mte > 0) else ("✗" if mte < 0 else "≈")
-            print(f"{v:5}{d*100:>5.0f}¢{len(tr):>9}{mtr:>+10.2f}{len(te):>9}{mte:>+10.2f}{ok:>6}")
+            print(f"{v:5}{lbl(d,s):>9}{len(tr):>9}{mtr:>+10.2f}{len(te):>9}{mte:>+10.2f}{ok:>6}")
         print()
 
     # GATE 2 — amplitud (¿broad o 4 pelotazos?)
-    print("=" * 90)
+    print("=" * 92)
     print("  GATE 2 — AMPLITUD (¿el +EV es broad o viene de unas pocas ventanas?)")
-    print("=" * 90)
-    print(f"{'':5}{'DEPTH':>6}{'PnL/vent':>10}{'PnL(−top1%)':>13}{'mediana-fill':>14}{'%fill>0':>9}")
+    print("=" * 92)
+    print(f"{'':5}{'cfg':>9}{'PnL/vent':>10}{'PnL(−top1%)':>13}{'mediana-fill':>14}{'%fill>0':>9}")
     for v in ("5m", "15m"):
-        for d in DEPTHS:
-            rows = data[(v, d)]
+        for ci, (d, s) in enumerate(CFG):
+            rows = data[(v, ci)]
             if not rows: continue
             pnls = [r[1] for r in rows]; n = len(pnls)
             k = max(1, int(0.01 * n)); rest = sorted(pnls, reverse=True)[k:]
             trim = mean(rest)
             fillp = [r[1] for r in rows if r[2] > 0]
             medf = median(fillp); pos = 100 * sum(1 for p in fillp if p > 0) / len(fillp) if fillp else 0
-            print(f"{v:5}{d*100:>5.0f}¢{mean(pnls):>+9.2f}{trim:>+12.2f}{medf:>+13.2f}{pos:>8.0f}%")
+            print(f"{v:5}{lbl(d,s):>9}{mean(pnls):>+9.2f}{trim:>+12.2f}{medf:>+13.2f}{pos:>8.0f}%")
         print()
-    print("VEREDICTO: edge REAL sólo si en GATE 1 'PnL_test' sigue + (✓) Y en GATE 2 'PnL(−top1%)' sigue + con")
-    print("'mediana-fill' ≥ 0 (no dependemos de 4 pelotazos). Si test<0 o el trim se hunde → sobreajuste, se cierra.")
-    print("Recuerda: todo es COTA SUPERIOR (gana la cola); el real es una fracción. Elegir la profundidad más")
-    print("robusta (misma señal en train y test, broad), no la de mayor PnL — esa es sobreajustar la muestra.")
+    print("VEREDICTO: el STOP salva el edge SÓLO si en GATE 1 'PnL_test' cruza a + (✓) Y en GATE 2 'PnL(−top1%)'")
+    print("cruza a + (deja de depender del top1%). Compara la fila con stop vs su '/∞' (sin stop): ¿el stop mueve")
+    print("test y trim a +? Si no lo hacen en ninguna config → la cola no era el problema, se cierra el MM.")
+    print("Todo COTA SUPERIOR (gana la cola). Configs fijadas a priori; NO elegir la mejor de la muestra.")
 
 
 if __name__ == "__main__":
