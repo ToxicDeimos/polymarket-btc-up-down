@@ -157,7 +157,7 @@ def main():
                      if oc == fav and tdet <= ts <= ws + wlen)
         if len(book) < 3 or len(trs) < 3: skip[v]["cinta"] += 1; continue
         sizes[v] += [sz for _, _, _, sz in trs]
-        jobs.append({"cid": w["cid"], "v": v, "fav": fav, "fav_ask": fav_ask, "book": book, "trs": trs})
+        jobs.append({"cid": w["cid"], "v": v, "ws": ws, "fav": fav, "fav_ask": fav_ask, "book": book, "trs": trs})
 
     toxic = {v: pctl(sizes[v], TOXIC_PCT) for v in ("5m", "15m")}
     for v in ("5m", "15m"):
@@ -200,37 +200,73 @@ def main():
     print(f"  ventanas con ganador: {len(jobs)}")
 
     DEPTHS = (0.0, 0.02, 0.03, 0.04, 0.05)
-    agg = {(v, d): {"n": 0, "filled": 0, "buys": 0, "buysum": 0.0, "pnl": 0.0, "pnlf": 0.0, "wonf": 0}
-           for v in ("5m", "15m") for d in DEPTHS}
+    # recolectar por (v, depth) la lista cruda: (ws, pnl, buys, buysum, won)
+    data = {(v, d): [] for v in ("5m", "15m") for d in DEPTHS}
     for j in jobs:
         won = j["won"]; fa = j["fav_ask"]
         for d in DEPTHS:
             r = run_mm(j["book"], j["trs"], None, COOLDOWN, d)
             pnl = (r["cash"] + r["end_inv"] * won + (r["buys"] + r["sells"]) * reb(fa)) * 100
-            a = agg[(j["v"], d)]; a["n"] += 1; a["pnl"] += pnl
-            if r["buys"] > 0:
-                a["filled"] += 1; a["buys"] += r["buys"]; a["buysum"] += r["buysum"]
-                a["pnlf"] += pnl; a["wonf"] += won
+            data[(j["v"], d)].append((j["ws"], pnl, r["buys"], r["buysum"], won))
 
-    # informe
-    print("\n" + "=" * 88)
+    def mean(xs): return sum(xs) / len(xs) if xs else 0.0
+    def median(xs):
+        s = sorted(xs); n = len(s)
+        return 0.0 if n == 0 else (s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2)
+    mids = {v: sorted(j["ws"] for j in jobs if j["v"] == v)[max(0, sum(1 for j in jobs if j["v"] == v) // 2 - 1)]
+            for v in ("5m", "15m") if any(j["v"] == v for j in jobs)}
+
+    # TABLA 1 — barrido (headline)
+    print("\n" + "=" * 90)
     print("  MM skew + HOLD · BARRIDO DE PROFUNDIDAD (my_bid = best_bid − DEPTH) · PnL = COTA SUPERIOR")
-    print("=" * 88)
-    print(f"{'':5}{'DEPTH':>6}{'N':>7}{'con-fill':>9}{'buys':>7}{'precio':>8}{'fav-gana%':>11}"
-          f"{'PnL/vent':>11}{'PnL/fill':>10}")
+    print("=" * 90)
+    print(f"{'':5}{'DEPTH':>6}{'N':>7}{'con-fill':>9}{'buys':>7}{'precio':>8}{'fav-gana%':>11}{'PnL/vent':>11}{'PnL/fill':>10}")
     for v in ("5m", "15m"):
         for d in DEPTHS:
-            a = agg[(v, d)]; n = a["n"]
+            rows = data[(v, d)]; n = len(rows)
             if not n: continue
-            fl = a["filled"]; avgbuy = a["buysum"] / a["buys"] if a["buys"] else 0
-            wr = 100 * a["wonf"] / fl if fl else 0
-            print(f"{v:5}{d*100:>5.0f}¢{n:>7}{fl:>9}{a['buys']:>7}{avgbuy:>8.3f}{wr:>10.0f}%"
-                  f"{a['pnl']/n:>+10.2f}{(a['pnlf']/fl if fl else 0):>+10.2f}")
+            fill = [r for r in rows if r[2] > 0]; fl = len(fill)
+            tb = sum(r[2] for r in fill); bs = sum(r[3] for r in fill)
+            wr = 100 * sum(r[4] for r in fill) / fl if fl else 0
+            print(f"{v:5}{d*100:>5.0f}¢{n:>7}{fl:>9}{tb:>7}{(bs/tb if tb else 0):>8.3f}{wr:>10.0f}%"
+                  f"{mean([r[1] for r in rows]):>+10.2f}{(mean([r[1] for r in fill]) if fl else 0):>+10.2f}")
         print()
-    print("lectura (COTA SUPERIOR, asume ganar la cola): si a MÁS DEPTH el 'PnL/vent' SUBE y cruza a + →")
-    print("los fills profundos son FAVORABLES (cazan overshoots que revierten) = el mecanismo de 13mm-wrench.")
-    print("'fav-gana%' es la clave: si el favorito que compraste hundido gana MÁS que su precio → edge real;")
-    print("si gana ~su precio o menos → el dump era información y no hay MM para nosotros. 'precio' = qué barato.")
+
+    # GATE 1 — train/test temporal
+    print("=" * 90)
+    print("  GATE 1 — TRAIN/TEST TEMPORAL (parte por fecha; el edge debe aguantar en la mitad OOS)")
+    print("=" * 90)
+    print(f"{'':5}{'DEPTH':>6}{'N_train':>9}{'PnL_train':>11}{'N_test':>9}{'PnL_test':>11}{'  OOS':>7}")
+    for v in ("5m", "15m"):
+        for d in DEPTHS:
+            rows = data[(v, d)]
+            if not rows: continue
+            tr = [p for ws, p, *_ in rows if ws < mids[v]]; te = [p for ws, p, *_ in rows if ws >= mids[v]]
+            mtr, mte = mean(tr), mean(te)
+            ok = "✓" if (mtr > 0 and mte > 0) else ("✗" if mte < 0 else "≈")
+            print(f"{v:5}{d*100:>5.0f}¢{len(tr):>9}{mtr:>+10.2f}{len(te):>9}{mte:>+10.2f}{ok:>6}")
+        print()
+
+    # GATE 2 — amplitud (¿broad o 4 pelotazos?)
+    print("=" * 90)
+    print("  GATE 2 — AMPLITUD (¿el +EV es broad o viene de unas pocas ventanas?)")
+    print("=" * 90)
+    print(f"{'':5}{'DEPTH':>6}{'PnL/vent':>10}{'PnL(−top1%)':>13}{'mediana-fill':>14}{'%fill>0':>9}")
+    for v in ("5m", "15m"):
+        for d in DEPTHS:
+            rows = data[(v, d)]
+            if not rows: continue
+            pnls = [r[1] for r in rows]; n = len(pnls)
+            k = max(1, int(0.01 * n)); rest = sorted(pnls, reverse=True)[k:]
+            trim = mean(rest)
+            fillp = [r[1] for r in rows if r[2] > 0]
+            medf = median(fillp); pos = 100 * sum(1 for p in fillp if p > 0) / len(fillp) if fillp else 0
+            print(f"{v:5}{d*100:>5.0f}¢{mean(pnls):>+9.2f}{trim:>+12.2f}{medf:>+13.2f}{pos:>8.0f}%")
+        print()
+    print("VEREDICTO: edge REAL sólo si en GATE 1 'PnL_test' sigue + (✓) Y en GATE 2 'PnL(−top1%)' sigue + con")
+    print("'mediana-fill' ≥ 0 (no dependemos de 4 pelotazos). Si test<0 o el trim se hunde → sobreajuste, se cierra.")
+    print("Recuerda: todo es COTA SUPERIOR (gana la cola); el real es una fracción. Elegir la profundidad más")
+    print("robusta (misma señal en train y test, broad), no la de mayor PnL — esa es sobreajustar la muestra.")
 
 
 if __name__ == "__main__":
