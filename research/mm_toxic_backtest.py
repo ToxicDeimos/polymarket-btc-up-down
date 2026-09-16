@@ -8,8 +8,10 @@ Además compara el SETTLEMENT del inventario sobrante: HOLD (aguantar a resoluci
 al bid en el cierre pagando fee taker = irse a casa plano). El diagnóstico decía que TODA la pérdida es
 la cola direccional del inventario atascado, no la captura del spread → FLAT debería borrarla.
 
-Pregunta 1: ¿FLAT (irse plano) cruza el PnL (cota superior) a +EV, o el MM desde la Pi está muerto?
-Pregunta 2: ¿es más eficiente en 5m o en 15m? (más round-trips, más plano, mejor PnL)
+Y BARRE LA PROFUNDIDAD del quote (my_bid = best_bid − DEPTH): los ganadores (13mm-wrench, winner_reverse)
+NO cotizan al toque, compran ~4¢ por debajo → solo se llenan en OVERSHOOTS que revierten, no en la deriva
+adversa. Pregunta decisiva: ¿a más DEPTH el favorito comprado hundido gana MÁS que su precio (edge real) o
+gana ~su precio (el dump era información → no hay MM para nosotros)? Settlement HOLD (los ganadores aguantan).
 
 Datos del lab (mismos que usa mm_ws, así el número es COMPARABLE = cota superior, asumo ganar la cola):
   books_*.csv     → best_bid (col 4), best_ask (col 10) del favorito, cada ~5s
@@ -95,17 +97,18 @@ def load_trades():
     return T
 
 
-def run_mm(book, trs, toxic_size, cooldown):
+def run_mm(book, trs, toxic_size, cooldown, depth=0.0):
     """book: sorted [(ts,bid,ask)]; trs: sorted [(ts,side,price,size)]. toxic_size=None → sin protección.
+    depth = cuántos ¢ POR DEBAJO del bid (y por encima del ask) descanso → solo me lleno en OVERSHOOTS.
     Devuelve las piezas crudas (cash, inv…); el settlement (hold vs flat) se calcula fuera."""
-    inv = 0; cash = 0.0; buys = sells = rt = 0; maxinv = 0
+    inv = 0; cash = 0.0; buys = sells = rt = 0; maxinv = 0; buysum = 0.0
     bid_pull = ask_pull = 0
     bi = 0; bid = ask = my_bid = my_ask = None
 
     def requote():
         nonlocal my_bid, my_ask
         if bid is None or ask is None: return
-        my_bid = round(bid - SKEW * inv, 2); my_ask = round(ask - SKEW * inv, 2)
+        my_bid = round(bid - depth - SKEW * inv, 2); my_ask = round(ask + depth - SKEW * inv, 2)
 
     for ts, side, price, size in trs:
         while bi < len(book) and book[bi][0] <= ts:
@@ -114,13 +117,13 @@ def run_mm(book, trs, toxic_size, cooldown):
         if my_bid is not None and my_ask is not None:
             # fill bajo el estado de retirada actual (la 1ª copia tóxica NO se puede esquivar; sí las réplicas)
             if side == "SELL" and price <= my_bid and inv < MAXINV and ts >= bid_pull:
-                inv += 1; cash -= my_bid; buys += 1; maxinv = max(maxinv, inv); requote()
+                inv += 1; cash -= my_bid; buysum += my_bid; buys += 1; maxinv = max(maxinv, inv); requote()
             elif side == "BUY" and price >= my_ask and inv > 0 and ts >= ask_pull:
                 inv -= 1; cash += my_ask; sells += 1; rt += 1; requote()
         if toxic_size is not None and size >= toxic_size:   # protege los prints siguientes
             if side == "SELL": bid_pull = ts + cooldown     # venta informada → dejo de comprar
             elif side == "BUY": ask_pull = ts + cooldown    # compra informada → dejo de vender
-    return dict(cash=cash, buys=buys, sells=sells, rt=rt, end_inv=inv, maxinv=maxinv)
+    return dict(cash=cash, buys=buys, sells=sells, rt=rt, end_inv=inv, maxinv=maxinv, buysum=buysum)
 
 
 def main():
@@ -184,54 +187,50 @@ def main():
                 cw.writerow([cid, w])
         return w
 
-    # PASO 2: resolver + simular. Los fills son IDÉNTICOS entre HOLD y FLAT (solo cambia el settlement
-    # del inventario sobrante): HOLD = aguantar a resolución (inv*won, lo de antes); FLAT = deshacerlo
-    # cruzando el spread en el cierre (vender al bid pagando fee taker) = disciplina "irse a casa plano".
+    # PASO 2: resolver una vez (winner por ventana) y BARRER LA PROFUNDIDAD. my_bid = best_bid − DEPTH:
+    # a más DEPTH solo me lleno cuando un trade IMPRIME ese overshoot (dump que sobrepasa y suele revertir).
+    # Settlement HOLD (los ganadores aguantan a resolución). DEPTH=0 = al toque = control (≈ −0,43/−7,21).
     print(f"\nresolviendo {len(jobs)} ventanas por CLOB (cacheado)…")
-    TAKERF = 0.07
-    def takerfee(p): return TAKERF * p * (1 - p)
-    agg = {v: {"n": 0, "rt": 0, "flat": 0, "maxinv": 0, "hold": 0.0, "flt": 0.0, "pflt": 0.0,
-               "flt_pos": 0, "hold_pos": 0} for v in ("5m", "15m")}
     done = 0
     for j in jobs:
-        win = resolve(j["cid"])
-        if win not in ("Up", "Down"): continue
-        won = 1 if j["fav"] == win else 0
-        last_bid = j["book"][-1][1]; fa = j["fav_ask"]
-        rb = run_mm(j["book"], j["trs"], None, COOLDOWN)              # solo skew
-        rp = run_mm(j["book"], j["trs"], toxic[j["v"]], COOLDOWN)    # skew + protección tóxica
-        def rebs(r): return (r["buys"] + r["sells"]) * reb(fa)
-        exit_unit = last_bid - takerfee(last_bid)                    # deshacer 1 share como taker al bid
-        pnl_hold = (rb["cash"] + rb["end_inv"] * won + rebs(rb)) * 100
-        pnl_flat = (rb["cash"] + rb["end_inv"] * exit_unit + rebs(rb)) * 100
-        pnl_pflt = (rp["cash"] + rp["end_inv"] * exit_unit + rebs(rp)) * 100
-        a = agg[j["v"]]
-        a["n"] += 1; a["rt"] += rb["rt"]; a["flat"] += (1 if rb["end_inv"] == 0 else 0)
-        a["maxinv"] += rb["maxinv"]
-        a["hold"] += pnl_hold; a["flt"] += pnl_flat; a["pflt"] += pnl_pflt
-        a["hold_pos"] += (1 if pnl_hold > 0 else 0); a["flt_pos"] += (1 if pnl_flat > 0 else 0)
+        w = resolve(j["cid"]); j["won"] = (1 if j["fav"] == w else 0) if w in ("Up", "Down") else None
         done += 1
-        if done % 200 == 0: print(f"   … {done}/{len(jobs)}")
+        if done % 500 == 0: print(f"   … {done}/{len(jobs)}")
+    jobs = [j for j in jobs if j["won"] is not None]
+    print(f"  ventanas con ganador: {len(jobs)}")
+
+    DEPTHS = (0.0, 0.02, 0.03, 0.04, 0.05)
+    agg = {(v, d): {"n": 0, "filled": 0, "buys": 0, "buysum": 0.0, "pnl": 0.0, "pnlf": 0.0, "wonf": 0}
+           for v in ("5m", "15m") for d in DEPTHS}
+    for j in jobs:
+        won = j["won"]; fa = j["fav_ask"]
+        for d in DEPTHS:
+            r = run_mm(j["book"], j["trs"], None, COOLDOWN, d)
+            pnl = (r["cash"] + r["end_inv"] * won + (r["buys"] + r["sells"]) * reb(fa)) * 100
+            a = agg[(j["v"], d)]; a["n"] += 1; a["pnl"] += pnl
+            if r["buys"] > 0:
+                a["filled"] += 1; a["buys"] += r["buys"]; a["buysum"] += r["buysum"]
+                a["pnlf"] += pnl; a["wonf"] += won
 
     # informe
-    print("\n" + "=" * 82)
-    print(f"  MM skew · settlement HOLD vs FLAT (irse plano) vs prot+flat · PnL = COTA SUPERIOR")
-    print("=" * 82)
-    print(f"{'':6}{'N':>6}{'RT/vent':>9}{'plano%':>8}{'máxinv':>8}{'PnL hold':>11}{'PnL flat':>11}{'prot+flat':>11}")
+    print("\n" + "=" * 88)
+    print("  MM skew + HOLD · BARRIDO DE PROFUNDIDAD (my_bid = best_bid − DEPTH) · PnL = COTA SUPERIOR")
+    print("=" * 88)
+    print(f"{'':5}{'DEPTH':>6}{'N':>7}{'con-fill':>9}{'buys':>7}{'precio':>8}{'fav-gana%':>11}"
+          f"{'PnL/vent':>11}{'PnL/fill':>10}")
     for v in ("5m", "15m"):
-        a = agg[v]; n = a["n"]
-        if not n: print(f"{v:6}{'—':>6}"); continue
-        print(f"{v:6}{n:>6}{a['rt']/n:>9.1f}{100*a['flat']/n:>7.0f}%{a['maxinv']/n:>8.2f}"
-              f"{a['hold']/n:>+10.2f}{a['flt']/n:>+11.2f}{a['pflt']/n:>+11.2f}")
-    print("\nlectura: 'plano%'/'máxinv' = mecánica fiable. Los 3 PnL son COTA SUPERIOR (asume ganar la cola).")
-    print("HOLD = aguantar inventario a resolución (lo de antes). FLAT = deshacerlo al bid en el cierre")
-    print("pagando fee taker (irse plano). prot+flat = protección tóxica encima. ¿FLAT borra la cola −EV?")
-    for v in ("5m", "15m"):
-        a = agg[v]; n = a["n"]
-        if n:
-            print(f"  {v}: Δ flat vs hold {a['flt']/n - a['hold']/n:+.2f}pp · "
-                  f"Δ prot+flat vs hold {a['pflt']/n - a['hold']/n:+.2f}pp · "
-                  f"flat PnL>0 {100*a['flt_pos']/n:.0f}% (hold {100*a['hold_pos']/n:.0f}%)")
+        for d in DEPTHS:
+            a = agg[(v, d)]; n = a["n"]
+            if not n: continue
+            fl = a["filled"]; avgbuy = a["buysum"] / a["buys"] if a["buys"] else 0
+            wr = 100 * a["wonf"] / fl if fl else 0
+            print(f"{v:5}{d*100:>5.0f}¢{n:>7}{fl:>9}{a['buys']:>7}{avgbuy:>8.3f}{wr:>10.0f}%"
+                  f"{a['pnl']/n:>+10.2f}{(a['pnlf']/fl if fl else 0):>+10.2f}")
+        print()
+    print("lectura (COTA SUPERIOR, asume ganar la cola): si a MÁS DEPTH el 'PnL/vent' SUBE y cruza a + →")
+    print("los fills profundos son FAVORABLES (cazan overshoots que revierten) = el mecanismo de 13mm-wrench.")
+    print("'fav-gana%' es la clave: si el favorito que compraste hundido gana MÁS que su precio → edge real;")
+    print("si gana ~su precio o menos → el dump era información y no hay MM para nosotros. 'precio' = qué barato.")
 
 
 if __name__ == "__main__":
