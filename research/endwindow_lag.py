@@ -21,6 +21,7 @@ DIR = os.path.join(os.path.dirname(__file__), "lab")
 DELTAS = (10, 20, 30)                 # s antes del cierre en que "compro"
 MOVES = (0, 25, 50, 100)              # umbral |spot_end − spot_open| en $ (decisividad del movimiento)
 TOL = 8                               # tolerancia s para casar un snapshot con un ts objetivo
+TOL_SPOT = 6                          # tolerancia s del spot como-de-t (ts ≤ t, sin futuro)
 CACHE = os.path.join(DIR, "clob_reso_mmtoxic.csv")   # reutiliza la caché ya poblada por los runs del MM
 
 
@@ -68,12 +69,21 @@ def near(series, idx, t, tol=TOL):
     return best if bd <= tol else None
 
 
-def near_list(rows, t, tol=TOL):
-    best = None; bd = tol + 1
-    for ts, px in rows:
-        d = abs(ts - t)
-        if d < bd: bd = d; best = px
-    return best if bd <= tol else None
+def near_le(series, idx, t, tol):
+    """(ts, price) del reading MÁS RECIENTE con ts ≤ t dentro de tol (lo que un trader ve en t, SIN futuro)."""
+    if not series: return None
+    i = bisect.bisect_right(idx, t) - 1
+    if i >= 0 and t - series[i][0] <= tol: return series[i]
+    return None
+
+
+def ask_ge(rows, t0, tmax):
+    """(ts, ask) del PRIMER snapshot de libro con ts ≥ t0 y ≤ tmax (el precio que consigo TRAS ver el spot).
+    Ancla el ask a no-antes-del-spot → mata el look-ahead de relojes desincronizados. rows ordenado por ts."""
+    for ts, ask in rows:
+        if ts >= t0:
+            return (ts, ask) if ts <= tmax else None
+    return None
 
 
 def load_books_asks():
@@ -123,7 +133,7 @@ def main():
                 cw.writerow([cid, w])
         return w
 
-    # recolectar registros: (v, D, absmove, ws, ask, hit)
+    # recolectar registros: (v, D, absmove, ws, ask, hit, skew)  — ask ANCLADO a ts ≥ spot (sin look-ahead)
     print(f"\nresolviendo {len(W)} ventanas por CLOB (cacheado)…")
     recs = []; done = 0; no_open = 0; no_win = 0
     for slug, w in W.items():
@@ -134,15 +144,19 @@ def main():
         if open_px is None: no_open += 1; continue
         win = resolve(w["cid"])
         if win not in ("Up", "Down"): no_win += 1; continue
+        for s in ("Up", "Down"): w["asks"][s].sort()
         for D in DELTAS:
-            tgt = ws + wlen - D
-            end_px = near(spot, sidx, tgt)
-            if end_px is None: continue
+            t = ws + wlen - D
+            sp = near_le(spot, sidx, t, TOL_SPOT)               # spot que se VE en t (ts ≤ t), sin futuro
+            if sp is None: continue
+            spot_ts, end_px = sp
             move = end_px - open_px
             sdir = "Up" if move > 0 else "Down"
-            ask = near_list(w["asks"][sdir], tgt)
-            if ask is None or not (0.0 < ask < 1.0): continue
-            recs.append((v, D, abs(move), ws, ask, 1 if win == sdir else 0))
+            aq = ask_ge(w["asks"][sdir], spot_ts, ws + wlen)    # ask con ts ≥ spot_ts (el precio TRAS ver el mov.)
+            if aq is None: continue
+            ask_ts, ask = aq
+            if not (0.0 < ask < 1.0): continue
+            recs.append((v, D, abs(move), ws, ask, 1 if win == sdir else 0, ask_ts - spot_ts))
     print(f"  registros: {len(recs)} · sin apertura: {no_open} · sin ganador: {no_win}")
 
     def mean(xs): return sum(xs) / len(xs) if xs else 0.0
@@ -150,14 +164,17 @@ def main():
             for v in ("5m", "15m") if any(r[0] == v for r in recs)}
 
     print("\n" + "=" * 94)
-    print("  DESFASE FIN DE VENTANA — comprar el ganador-spot en T−Δ y aguantar a resolución (EV REAL, no cota)")
+    print("  DESFASE FIN DE VENTANA — ask ANCLADO a ts ≥ spot (corregido look-ahead) · EV REAL taker, no cota")
     print("=" * 94)
     print("  acc% = veces que la dirección del spot en T−Δ acierta la resolución · ask = precio medio de compra")
     print("  gap = acc − ask (hueco) · EV = acc − ask − fee_taker · train/test parte por fecha (OOS)")
+    print("  skew = s medios entre el ask usado y el spot (antes iba rancio; ahora ≥0 y pequeño = corregido)")
     for v in ("5m", "15m"):
         if v not in mids: continue
         for D in DELTAS:
-            print(f"\n  ── {v}  ·  Δ = {D}s antes del cierre " + "─" * 40)
+            blk = [r for r in recs if r[0] == v and r[1] == D]
+            sk = mean([r[6] for r in blk]) if blk else 0
+            print(f"\n  ── {v}  ·  Δ = {D}s antes del cierre  ·  skew medio ask−spot: {sk:.1f}s " + "─" * 18)
             print(f"    {'|mov|≥$':>8}{'n':>7}{'acc%':>7}{'ask':>7}{'gap':>7}{'EV':>8}{'EV_tr':>8}{'EV_te':>8}")
             for M in MOVES:
                 rows = [r for r in recs if r[0] == v and r[1] == D and r[2] >= M]
@@ -169,10 +186,9 @@ def main():
                 evtr = mean([r[5] - r[4] - fee(r[4]) for r in tr]) * 100
                 evte = mean([r[5] - r[4] - fee(r[4]) for r in te]) * 100
                 print(f"    {M:>8}{n:>7}{100*acc:>6.0f}%{ask:>7.3f}{100*(acc-ask):>+6.0f}{ev:>+8.2f}{evtr:>+8.2f}{evte:>+8.2f}")
-    print("\nVEREDICTO: hueco REAL si a mayor |mov| el 'gap' es claramente + (acc >> ask) y 'EV' se mantiene +")
-    print("EN TRAIN Y TEST. Como es taker (levantar el ask), NO es cota superior — el número es casi el real,")
-    print("salvo que el ask se mueva en los ~s hasta mi orden. Si acc≈ask (gap~0) → el mercado ya está pegado")
-    print("al spot en los últimos segundos y no hay desfase → pozo seco también aquí.")
+    print("\nVEREDICTO: ahora el ask NO puede ir antes que el spot (skew ≥ 0). Si el EV se DERRUMBA vs la corrida")
+    print("anterior (+2 a +30) → era look-ahead de relojes, humo. Si SOBREVIVE + en train Y test → hay desfase")
+    print("real. Como es taker (levantar el ask), NO es cota superior. Compara con la corrida sin anclar.")
 
 
 if __name__ == "__main__":
