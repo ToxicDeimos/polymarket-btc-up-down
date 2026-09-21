@@ -174,9 +174,37 @@ def analyze():
     print("⚠ COTA SUPERIOR: asume ganar la cola en cada fill. La cifra real la dan órdenes de $1 de verdad.")
 
 
+def debug_mode():
+    """Se conecta a la ventana 5m en curso e imprime cada trade con su size (y el evento crudo de los 3
+    primeros) durante ~90s → confirma si el WSS trae 'size' y a qué escala están los trades en vivo."""
+    t = now(); ws = t - t % 300
+    mk = discover(ws) or discover(ws + 300)
+    if not mk or "Up" not in mk["toks"]: print("no pude descubrir ventana"); return
+    toks = mk["toks"]; id2out = {toks["Up"]: "Up", toks["Down"]: "Down"}
+    print(f"DEBUG escuchando {ws} (Up+Down) ~90s — trades en vivo:")
+    raw = [0]
+
+    def on_open(w): w.send(json.dumps({"type": "market", "assets_ids": [toks["Up"], toks["Down"]]}))
+
+    def on_message(w, msg):
+        try: data = json.loads(msg)
+        except Exception: return
+        for d in (data if isinstance(data, list) else [data]):
+            if d.get("event_type") == "last_trade_price" and d.get("asset_id") in id2out:
+                if raw[0] < 3: print("   RAW:", json.dumps(d)); raw[0] += 1
+                print(f"   TRADE {id2out[d['asset_id']]:>4} side={d.get('side'):>4} "
+                      f"price={d.get('price')} size={d.get('size')}")
+
+    wsapp = websocket.WebSocketApp(WSS, on_open=on_open, on_message=on_message, on_error=lambda w, e: None)
+    threading.Thread(target=lambda: (time.sleep(90), wsapp.close()), daemon=True).start()
+    wsapp.run_forever(ping_interval=20, ping_timeout=10)
+    print("fin debug — si no ves 'size=' con número, el WSS no lo trae y tiramos del fallback de caída de bid.")
+
+
 def main():
     if "--resolve" in sys.argv: resolve_mode()
     elif "--analyze" in sys.argv: analyze()
+    elif "--debug" in sys.argv: debug_mode()
     else: live()
 
 
