@@ -1,27 +1,28 @@
 """
-winner_mirror.py — ¿El edge de los wallets GANADORES es TRANSFERIBLE? No copiamos su "indicador" (no hay, ya
-visto en order-flow-mine) sino sus TRADES: cuando un ganador COMPRA un outcome, entramos nosotros AL PRECIO
-QUE NOSOTROS conseguimos (su ask en el momento en que lo VEMOS, con el lag del colector) y aguantamos a
-resolución. Su ventaja es de maker (compran ~4¢ bajo el mid); la pregunta exacta:
+winner_mirror.py — ¿El edge de los wallets GANADORES es TRANSFERIBLE? Copiamos sus BUY: entramos al ask que
+NOSOTROS conseguimos y aguantamos a resolución. Su ventaja es de maker; ¿su dirección sobrevive el spread?
 
-  ¿su DIRECCIÓN sobrevive al spread que pagamos de más al seguirlos tarde, o se lo come?
-
-Datos del lab: fills_*.csv (fills de los 6 ganadores) + books_*.csv (nuestro ask al verlos) + resolución CLOB.
-their_EV = hit − su_precio (maker) ·  our_EV = hit − nuestro_ask − fee_taker.  Por wallet y con corte train/test.
+v2 (corrige timing): la 1ª versión usó ts_seen (cuando el colector VIO el fill, con minutos de lag del
+data-api) → slip salía NEGATIVO (imposible: un taker no compra más barato que el maker) porque muchos ts_seen
+caían POST-cierre (ask contaminado/archivado). Aquí entro en ts_trade + REACCIÓN (5s, viable en vivo por WSS),
+SOLO si es PRE-cierre con margen para llenar. Reporto el lag y el %post-cierre para exponer la contaminación,
+y comparo el modelo REAL (ts_trade+react) vs el viejo (ts_seen). Neto de fee taker, por wallet y train/test.
 
     cd ~/polymarket-btc-up-down/research && python3 winner_mirror.py
 """
 import csv, os, sys, glob, json, time, bisect, urllib.request
 
 DIR = os.path.join(os.path.dirname(__file__), "lab")
-TOL = 15                     # s para casar nuestro ask con el momento en que vemos el fill
+TOL = 15
+REACT = 5                    # s de reacción tras ver el trade (detección WSS + orden REST)
+BUFFER = 5                   # s de margen antes del cierre para poder llenar
 CACHE = os.path.join(DIR, "clob_reso_mmtoxic.csv")
 
 
 def get(url, tries=2):
     for i in range(tries):
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": "mirror/1.0"})
+            req = urllib.request.Request(url, headers={"User-Agent": "mirror/2.0"})
             with urllib.request.urlopen(req, timeout=12) as r: return json.load(r)
         except Exception:
             if i == tries - 1: return None
@@ -40,7 +41,6 @@ def fee(p): return 0.07 * p * (1 - p)
 
 
 def load_books_asks():
-    """slug -> {Up:([ts],[ask]), Down:([ts],[ask])}  (índices para bisect)"""
     tmp = {}
     for path in sorted(glob.glob(os.path.join(DIR, "books_*.csv"))):
         with open(path, encoding="utf-8") as fh:
@@ -79,9 +79,9 @@ def load_fills():
             for r in csv.DictReader(fh):
                 if r.get("trade_side") != "BUY" or r.get("outcome") not in ("Up", "Down"): continue
                 try:
-                    ts_seen = int(float(r["ts_seen"])); price = float(r["price"])
+                    ts_seen = int(float(r["ts_seen"])); ts_trade = int(float(r["ts_trade"])); price = float(r["price"])
                 except Exception: continue
-                F.append((r["wallet"], ts_seen, r["slug"], r["cid"], r["outcome"], price))
+                F.append((r["wallet"], ts_seen, ts_trade, r["slug"], r["cid"], r["outcome"], price))
     return F
 
 
@@ -107,31 +107,40 @@ def main():
                 cw.writerow([cid, w])
         return w
 
-    recs = []   # (wallet, ws, hit, our_ask, their_price)
-    dedup = set()
-    for wallet, ts_seen, slug, cid, outcome, price in F:
+    lags = []; post_close = 0; total = 0
+    recs = []; dedup = set()
+    for wallet, ts_seen, ts_trade, slug, cid, outcome, price in F:
         if slug not in B: continue
         key = (cid, outcome, round(price, 3), wallet)
         if key in dedup: continue
         dedup.add(key)
-        oa = ask_at(B[slug][outcome], ts_seen)
+        ws = int(slug.split("-")[-1]); wlen = 300 if "-5m-" in slug else 900; close = ws + wlen
+        total += 1; lags.append(ts_seen - ts_trade)
+        if ts_seen > close: post_close += 1
+        # modelo REAL: entrar en ts_trade+REACT, solo si pre-cierre con margen
+        te = ts_trade + REACT
+        if te > close - BUFFER: continue
+        oa = ask_at(B[slug][outcome], te)
         if oa is None or not (0.0 < oa < 1.0): continue
         win = resolve(cid)
         if win not in ("Up", "Down"): continue
-        ws = int(slug.split("-")[-1])
-        recs.append((wallet, ws, 1 if win == outcome else 0, oa, price))
+        as_ = ask_at(B[slug][outcome], ts_seen)   # viejo (ts_seen) para contraste
+        recs.append((wallet, ws, 1 if win == outcome else 0, oa, price, as_))
+    lags.sort()
+    med = lags[len(lags) // 2] if lags else 0
+    print(f"lag ts_seen−ts_trade: mediana {med}s · máx {lags[-1] if lags else 0}s · "
+          f"%post-cierre (intradeable): {100*post_close/total:.0f}%  (esto contaminaba la v1)")
     n = len(recs)
-    print(f"fills copiables (con ask y resolución): {n}")
+    print(f"fills copiables PRE-cierre (modelo real): {n}")
     if not n: return
 
-    def mean(xs): return sum(xs) / len(xs) if xs else float("nan")
+    def mean(xs): return sum([x for x in xs if x is not None]) / max(1, len([x for x in xs if x is not None]))
     mid = sorted(r[1] for r in recs)[n // 2]
 
     def block(name, sub):
         m = len(sub)
         if not m: return
-        wr = 100 * mean([r[2] for r in sub])
-        tp = mean([r[4] for r in sub]); oa = mean([r[3] for r in sub])
+        wr = 100 * mean([r[2] for r in sub]); tp = mean([r[4] for r in sub]); oa = mean([r[3] for r in sub])
         their = 100 * mean([r[2] - r[4] for r in sub])
         our = 100 * mean([r[2] - r[3] - fee(r[3]) for r in sub])
         tr = [r for r in sub if r[1] < mid]; te = [r for r in sub if r[1] >= mid]
@@ -141,16 +150,20 @@ def main():
               f"{their:>+9.2f}{our:>+9.2f}{ourtr:>+9.2f}{ourte:>+9.2f}")
 
     print("\n" + "=" * 96)
-    print("  MIRROR DE GANADORES — seguirlos al ask y aguantar a resolución (neto fee)  ·  PnL en pp")
+    print("  MIRROR v2 (entrada ts_trade+5s, PRE-cierre) — seguirlos al ask y aguantar a resolución (neto fee)")
     print("=" * 96)
     print(f"  {'wallet':>12}{'n':>7}{'gana%':>7}{'su_prec':>9}{'ntro_ask':>9}{'slip':>8}{'su_EV':>9}{'ntro_EV':>9}{'EV_tr':>9}{'EV_te':>9}")
     for wal in sorted(set(r[0] for r in recs)):
         block(wal, [r for r in recs if r[0] == wal])
     print("  " + "-" * 94)
     block("TODOS", recs)
-    print("\nLECTURA: 'su_EV' + confirma que ganan. 'slip'=cuánto pagamos de más por seguirlos tarde. Si 'ntro_EV'")
-    print("es + y ESTABLE (EV_tr y EV_te ambos +) → su dirección sobrevive el spread → edge transferible. Si")
-    print("'su_EV'+ pero 'ntro_EV'− → su ventaja era 100% de fill de maker, no replicable. Mira wallet a wallet.")
+    old_ev = 100 * mean([r[2] - r[5] - fee(r[5]) for r in recs if r[5] is not None])
+    print(f"\n  (contraste v1 con ts_seen sobre estas mismas: ntro_EV {old_ev:+.2f}pp — si difiere mucho del real, "
+          f"era timing)")
+    print("\nLECTURA: ahora 'slip' DEBE ser + (pagamos el spread al seguir tarde). Si 'ntro_EV' sigue + y estable")
+    print("(tr y te) con slip realista → edge de dirección REAL y transferible. Si se derrumba a −/0 → la v1 era")
+    print("contaminación de timing (post-cierre). OJO ejecución: seguir wallet exacta en vivo es difícil (WSS no")
+    print("trae wallet); si es real, el paso siguiente es reencuadrar como señal de FLUJO agresor (sí en WSS).")
 
 
 if __name__ == "__main__":
