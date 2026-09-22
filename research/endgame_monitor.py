@@ -44,6 +44,15 @@ def spot():
     except Exception: return None
 
 
+def kline_open(ws):
+    """precio de apertura de la ventana = open de la vela 1m de Binance que empieza en ws (sirve aunque arranquemos tarde)."""
+    d = get(f"https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1m&startTime={ws*1000}&limit=1", timeout=5)
+    try:
+        if int(d[0][0]) // 1000 == ws: return float(d[0][1])
+    except Exception: pass
+    return None
+
+
 def discover(ws):
     d = get(f"https://gamma-api.polymarket.com/markets?slug=btc-updown-5m-{ws}")
     if not (isinstance(d, list) and d): return None
@@ -113,29 +122,25 @@ def run_window(ws, mk, open_px):
                         st["Down"]["a"], st["Down"]["b"], ru, rd, acc, cl])
         time.sleep(max(0.0, 2.0 - (now() - t)))
     wsapp.close()
+    print(f"   fin {ws}")
 
 
 def live():
     print("=" * 60 + "\n  ENDGAME MONITOR — WSS vs REST en los últimos 40s (no opera)\n" + "=" * 60)
-    opens = {}; done = set()
-
-    def recorder():
-        while True:
-            t = now(); ws = int(t - t % 300)
-            if ws not in opens and t - ws < 5:
-                s = spot()
-                if s: opens[ws] = s
-                if len(opens) > 400:
-                    for k in sorted(opens)[:200]: opens.pop(k, None)
-            time.sleep(0.5)
-    threading.Thread(target=recorder, daemon=True).start()
+    done = set()
+    t = now(); ws = int(t - t % 300)
+    start = ws + 255 if t < ws + 285 else ws + 555
+    print(f"  próxima monitorización en {int(start - t)}s (cada ventana 5m, del minuto 4:15 al cierre+15s)")
     while True:
         try:
             t = now(); ws = int(t - t % 300)
-            if ws in opens and ws not in done and t >= ws + 255:
-                mk = discover(ws)
+            if ws not in done and ws + 255 <= t < ws + 290:
                 done.add(ws)
-                if mk and "Up" in mk["toks"]: run_window(ws, mk, opens[ws])
+                open_px = kline_open(ws) or None
+                mk = discover(ws)
+                if open_px is None: print(f"  {ws}: sin apertura (Binance), salto")
+                elif mk and "Up" in mk["toks"]: run_window(ws, mk, open_px)
+                if len(done) > 500: done = set(sorted(done)[-100:])
             time.sleep(1)
         except KeyboardInterrupt: print("\nparado."); break
         except Exception as ex: print("  err:", ex); time.sleep(5)
