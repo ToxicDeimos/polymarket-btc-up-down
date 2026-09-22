@@ -13,7 +13,7 @@ y todas las operaciones del WSS (last_trade_price). NO opera.
     cd ~/polymarket-btc-up-down/research && python3 endgame_monitor.py            # vivo (1-2 días)
     python3 endgame_monitor.py --analyze                                          # veredicto
 """
-import websocket, json, time, threading, csv, os, sys, urllib.request
+import websocket, json, time, threading, csv, os, sys, glob, bisect, urllib.request
 
 DIR = os.path.dirname(__file__)
 LOG = os.path.join(DIR, "endgame_log.csv")
@@ -151,27 +151,57 @@ def fnum(x):
     except Exception: return None
 
 
+def load_lab_spot():
+    out = []
+    for path in sorted(glob.glob(os.path.join(DIR, "lab", "spot_*.csv"))):
+        with open(path, encoding="utf-8") as fh:
+            rd = csv.reader(fh); next(rd, None)
+            for row in rd:
+                try: out.append((int(row[0]), float(row[1])))
+                except Exception: continue
+    out.sort(); return [t for t, _ in out], [p for _, p in out]
+
+
 def analyze():
+    """Clasifica el líder con la REGLA REAL (desde 7-ago-2026): media de los últimos 60 s frente a la media de
+    los 60 s anteriores a la apertura (TWAP Chainlink; aquí con spot Binance del lab como proxy). margen =
+    TWAP esperado − referencia, donde lo ya transcurrido del último minuto es conocido y el resto = precio actual."""
     if not os.path.exists(LOG): print("sin log"); return
     R = list(csv.DictReader(open(LOG, encoding="utf-8")))
     T = list(csv.DictReader(open(TLOG, encoding="utf-8"))) if os.path.exists(TLOG) else []
+    sts, spx = load_lab_spot()
     nw = len(set(r["ws"] for r in R))
-    print(f"filas: {len(R)} · ventanas: {nw} · trades WSS: {len(T)}")
+    print(f"filas: {len(R)} · ventanas: {nw} · trades WSS: {len(T)} · spot lab: {len(sts)}")
+
+    def avg(a, b):
+        lo = bisect.bisect_left(sts, a); hi = bisect.bisect_right(sts, b)
+        return (sum(spx[lo:hi]) / (hi - lo)) if hi - lo >= 2 else None
+
     rows = []
     for r in R:
-        s, o, ttc = fnum(r["spot"]), fnum(r["open"]), fnum(r["ttc"])
-        if s is None or o is None or ttc is None: continue
-        lead = s - o; X = "Up" if lead > 0 else "Down"; k = "up" if X == "Up" else "dn"
-        rows.append({"ws": r["ws"], "ts": fnum(r["ts"]), "ttc": ttc, "lead": abs(lead), "X": X,
+        s, ttc, ts = fnum(r["spot"]), fnum(r["ttc"]), fnum(r["ts"])
+        if s is None or ttc is None or ts is None: continue
+        ws = int(float(r["ws"])); close = ws + 300
+        ref = avg(ws - 60, ws)
+        if ref is None: continue
+        x = close - ts
+        if 0 < x < 60:
+            kn = avg(close - 60, ts)
+            exp = s if kn is None else (kn * (60 - x) + s * x) / 60
+        else:
+            exp = s
+        m = exp - ref
+        X = "Up" if m > 0 else "Down"; k = "up" if X == "Up" else "dn"
+        rows.append({"ws": r["ws"], "ts": ts, "ttc": ttc, "lead": abs(m), "X": X,
                      "wa": fnum(r[f"wss_ask_{k}"]), "ra": fnum(r[f"rest_ask_{k}"]),
                      "acc": r["accepting"], "cl": r["closed"]})
 
     def med(xs):
         xs = sorted(x for x in xs if x is not None); return xs[len(xs) // 2] if xs else float("nan")
-    print("\n  LÍDER con |ventaja| ≥ $30 · por tramo hasta el cierre")
+    print("\n  LÍDER por REGLA TWAP con |margen| ≥ $15 · por tramo hasta el cierre")
     print(f"  {'tramo':>12}{'n':>6}{'ask_REST':>9}{'ask_WSS':>9}{'REST≤0,70':>10}{'WSS≤0,70':>10}{'REST≤0,7 y WSS≥0,9':>20}{'accept=False':>13}")
     for lo, hi in ((30, 40), (20, 30), (10, 20), (0, 10), (-15, 0)):
-        sub = [x for x in rows if lo < x["ttc"] <= hi and x["lead"] >= 30]
+        sub = [x for x in rows if lo < x["ttc"] <= hi and x["lead"] >= 15]
         if not sub: continue
         both = [x for x in sub if x["ra"] is not None and x["wa"] is not None]
         rc = [x for x in both if x["ra"] <= 0.70]
@@ -182,7 +212,7 @@ def analyze():
               f"{100*sum(1 for x in both if x['wa']<=0.70)/max(1,len(both)):>9.0f}%{stale:>19.0f}%"
               f"{100*sum(1 for x in sub if x['acc']=='False')/len(sub):>12.0f}%")
     # ¿se puede ejecutar el ask barato REAL (visible en WSS)?
-    cheap = [x for x in rows if 0 < x["ttc"] <= 30 and x["lead"] >= 30 and x["wa"] is not None and x["wa"] <= 0.70
+    cheap = [x for x in rows if 0 < x["ttc"] <= 30 and x["lead"] >= 15 and x["wa"] is not None and x["wa"] <= 0.70
              and x["acc"] != "False"]
     fills = 0
     for x in cheap:
@@ -190,7 +220,7 @@ def analyze():
             if t["ws"] == x["ws"] and t["outcome"] == x["X"] and x["ts"] <= fnum(t["ts"]) <= x["ts"] + 10 \
                     and fnum(t["price"]) is not None and fnum(t["price"]) <= x["wa"] + 0.02:
                 fills += 1; break
-    print(f"\n  casos con ask del líder ≤0,70 VISIBLE EN WSS, mercado aceptando órdenes, ventaja ≥$30, ≤30s: {len(cheap)} "
+    print(f"\n  casos con ask del líder ≤0,70 VISIBLE EN WSS, mercado aceptando órdenes, margen TWAP ≥$15, ≤30s: {len(cheap)} "
           f"(ventanas {len(set(x['ws'] for x in cheap))}) · con operación a ese precio en ≤10s: {fills}")
     print("\nLECTURA: si REST≤0,70 pero WSS≥0,9 casi siempre → REST devolvía un libro viejo = ARTEFACTO. Si accept=False")
     print("sube al final → el mercado deja de aceptar órdenes = no ejecutable. Si hay casos con ask barato VISIBLE en WSS")
