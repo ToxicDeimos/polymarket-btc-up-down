@@ -204,7 +204,9 @@ def main():
         pool = [r for r in rows if abs(r[3] - e["px"]) <= PXTOL and abs(r[0] - e["ts"]) > 20]
         if not pool: continue
         c = rnd.choice(pool)
-        g = feats(e["cid"], e["oc"], c[0], c[3], c[1], c[2], c[2], c[4])
+        # BK guarda (ts, bid, bid_size, ask, ask_size); feats espera (t, px, bid, ask, bid_size, ask_size).
+        # La primera versión pasaba c[2] (TAMAÑO del bid) donde va el PRECIO del ask → spread de 31.769¢.
+        g = feats(e["cid"], e["oc"], c[0], c[3], c[1], c[3], c[2], c[4])
         if g is None: continue
         F.append((f, g))
     print(f"  entradas emparejadas con control: {len(F)}")
