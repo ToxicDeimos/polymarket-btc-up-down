@@ -34,23 +34,19 @@ def med(xs):
 def main():
     if not os.path.exists(TLOG):
         print(f"no encuentro {TLOG} — ¿está corriendo endgame-monitor?"); return
+    # cabecera real de endgame_monitor: ts, ws, outcome, side, price, size
     W = []
     with open(TLOG, encoding="utf-8") as fh:
         for r in csv.DictReader(fh):
             try:
-                W.append((float(r["ts"]), int(r["ws"]), r["side"].strip(),
-                          (r.get("trade_side") or r.get("tside") or "").upper(), float(r["price"])))
+                oc = (r.get("outcome") or "").strip()
+                if oc not in ("Up", "Down"): continue
+                W.append((float(r["ts"]), int(r["ws"]), oc,
+                          (r.get("side") or "").strip().upper(), float(r["price"])))
             except Exception:
                 continue
     if not W:
-        # cabecera distinta: leer posicionalmente
-        with open(TLOG, encoding="utf-8") as fh:
-            rd = csv.reader(fh); next(rd, None)
-            for row in rd:
-                try: W.append((float(row[0]), int(row[1]), row[2].strip(), (row[3] or "").upper(), float(row[4])))
-                except Exception: continue
-    if not W:
-        print("endgame_trades.csv vacío o ilegible"); return
+        print("endgame_trades.csv vacío o ilegible — comprobar la cabecera"); return
     wss_set = set(w[1] for w in W)
     print(f"operaciones WSS: {len(W)} · ventanas: {len(wss_set)}")
 
@@ -82,23 +78,26 @@ def main():
     if not API:
         print("la cinta de la API aún no cubre esas ventanas — esperar a que el colector las escriba"); return
 
-    deltas = []; nomatch = 0
+    deltas = []; why = {"sin cid": 0, "sin serie": 0, "nada en ±30s": 0, "precio distinto": 0}
     for tsw, ws, side, tside, px in W:
         cid = ws2cid.get(ws)
-        rows = API.get((cid, side)) if cid else None
-        if not rows: nomatch += 1; continue
+        if not cid: why["sin cid"] += 1; continue
+        rows = API.get((cid, side))
+        if not rows: why["sin serie"] += 1; continue
         lo = bisect.bisect_left(rows, (int(tsw) - TWIN, -1))
         hi = bisect.bisect_right(rows, (int(tsw) + TWIN, 2))
+        if hi <= lo: why["nada en ±30s"] += 1; continue
         best = None
         for j in range(lo, hi):
             ts, pr = rows[j]
             if abs(pr - px) > PXTOL: continue
             d = ts - tsw
             if best is None or abs(d) < abs(best): best = d
-        if best is None: nomatch += 1
+        if best is None: why["precio distinto"] += 1
         else: deltas.append(best)
 
-    print(f"\nemparejadas: {len(deltas)} · sin pareja: {nomatch}")
+    print(f"\nemparejadas: {len(deltas)} · sin pareja: {sum(why.values())}"
+          f"  ({' · '.join(f'{k}: {v}' for k, v in why.items() if v)})")
     if len(deltas) < 30:
         print("muy pocas parejas para concluir — dejar correr el monitor unas horas más"); return
     deltas.sort()
