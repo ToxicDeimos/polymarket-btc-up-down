@@ -26,6 +26,8 @@ DIR = os.path.dirname(__file__)
 WSS = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 H = ["ts", "ws", "tok", "typ", "side", "price", "size", "bb", "ba"]
 LAT = (0, 100, 250, 500, 1000, 2000, 5000)      # latencias a evaluar, ms
+BAND = 0.05      # solo grabamos cerca del toque: en la primera prueba el 95% de los eventos eran alguien
+                 # moviendo 11.000 acciones en 0,01/0,99 con el toque en 0,77 — 3 GB/día de ruido puro.
 LOCK = threading.Lock()
 BUF = deque()
 
@@ -76,9 +78,21 @@ def flusher(stop):
 def run_window(ws, mk):
     toks = mk["toks"]; id2 = {toks["Up"]: "Up", toks["Down"]: "Down"}
     close = ws + 300
+    touch = {"Up": [None, None], "Down": [None, None]}      # último [bb, ba] conocido por token
+    seen = [0, 0]                                           # [grabadas, descartadas]
 
     def push(row):
         with LOCK: BUF.append(row)
+
+    def near(tok, px, bb, ba):
+        """¿el precio está en la banda del toque? Mantiene el toque conocido por token."""
+        t = touch[tok]
+        if bb not in (None, ""): t[0] = float(bb)
+        if ba not in (None, ""): t[1] = float(ba)
+        lo = (t[0] - BAND) if t[0] is not None else None
+        hi = (t[1] + BAND) if t[1] is not None else None
+        if lo is None and hi is None: return True           # aún sin toque: no descartamos nada
+        return ((lo is None or px >= lo) and (hi is None or px <= hi))
 
     def on_open(w):
         w.send(json.dumps({"type": "market", "assets_ids": [toks["Up"], toks["Down"]]}))
@@ -94,6 +108,7 @@ def run_window(ws, mk):
                 bids = sorted(((float(x["price"]), float(x["size"])) for x in d.get("bids", [])), reverse=True)
                 asks = sorted((float(x["price"]), float(x["size"])) for x in d.get("asks", []))
                 bb = bids[0][0] if bids else ""; ba = asks[0][0] if asks else ""
+                near(tok, bb or 0.5, bb, ba)                 # refresca el toque conocido
                 for p, s in bids[:5]: push([t, ws, tok, "B", "bid", p, s, bb, ba])
                 for p, s in asks[:5]: push([t, ws, tok, "B", "ask", p, s, bb, ba])
             elif et == "price_change":
@@ -101,8 +116,13 @@ def run_window(ws, mk):
                     a = ch.get("asset_id")
                     if a not in id2: continue
                     try:
-                        push([t, ws, id2[a], "C", ch.get("side", ""), float(ch["price"]),
-                              float(ch.get("size", 0)), ch.get("best_bid", ""), ch.get("best_ask", "")])
+                        tok = id2[a]; px = float(ch["price"])
+                        bb = ch.get("best_bid", ""); ba = ch.get("best_ask", "")
+                        if not near(tok, px, bb, ba):
+                            seen[1] += 1; continue           # lejos del toque: no interesa
+                        seen[0] += 1
+                        push([t, ws, tok, "C", ch.get("side", ""), px,
+                              float(ch.get("size", 0)), bb, ba])
                     except Exception: pass
             elif et == "last_trade_price" and aid in id2:
                 try:
@@ -116,6 +136,9 @@ def run_window(ws, mk):
     print(f"── {ws} grabando (cierra en {int(close - time.time())}s)", flush=True)
     while time.time() < close + 3: time.sleep(0.5)
     app.close()
+    tot = seen[0] + seen[1]
+    print(f"   cambios: {seen[0]} grabados · {seen[1]} descartados por lejanos "
+          f"({100*seen[1]/tot if tot else 0:.0f}%)", flush=True)
 
 
 def record():
