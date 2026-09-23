@@ -24,6 +24,12 @@ from collections import deque
 
 DIR = os.path.dirname(__file__)
 WSS = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+# Sin el spot a la MISMA resolución no se puede ver si el libro se queda atrás: el laboratorio graba libro y
+# spot cada ~6-7 s y el fenómeno vive en 1-3 s, así que stalepick no podía medirlo (instrumento más lento que
+# el fenómeno). bookTicker da el mejor bid/ask de Binance en cada cambio.
+SPOT_WSS = "wss://stream.binance.com:9443/ws/btcusdt@bookTicker"
+SPOT_MS = 0.1        # como mucho una fila cada 100 ms…
+SPOT_JUMP = 1.0      # …salvo que BTC se mueva $1, que entonces se graba igual
 H = ["ts", "ws", "tok", "typ", "side", "price", "size", "bb", "ba"]
 LAT = (0, 10, 25, 50, 100, 250, 500, 1000, 2000, 5000)      # latencias a evaluar, ms
 BAND = 0.05      # solo grabamos cerca del toque: en la primera prueba el 95% de los eventos eran alguien
@@ -133,9 +139,27 @@ def run_window(ws, mk):
     app = websocket.WebSocketApp(WSS, on_open=on_open, on_message=on_message, on_error=lambda a, b: None)
     th = threading.Thread(target=lambda: app.run_forever(ping_interval=20, ping_timeout=10), daemon=True)
     th.start()
+
+    # ── spot de Binance al milisegundo, en el MISMO reloj y el mismo fichero (typ="S") ──
+    last = [0.0, None]
+
+    def on_spot(w, msg):
+        t = round(time.time(), 3)
+        try:
+            d = json.loads(msg)
+            mid = (float(d["b"]) + float(d["a"])) / 2
+        except Exception: return
+        if last[1] is not None and (t - last[0]) < SPOT_MS and abs(mid - last[1]) < SPOT_JUMP:
+            return
+        last[0] = t; last[1] = mid
+        push([t, ws, "BTC", "S", "", round(mid, 2), "", "", ""])
+
+    sapp = websocket.WebSocketApp(SPOT_WSS, on_message=on_spot, on_error=lambda a, b: None)
+    sth = threading.Thread(target=lambda: sapp.run_forever(ping_interval=20, ping_timeout=10), daemon=True)
+    sth.start()
     print(f"── {ws} grabando (cierra en {int(close - time.time())}s)", flush=True)
     while time.time() < close + 3: time.sleep(0.5)
-    app.close()
+    app.close(); sapp.close()
     tot = seen[0] + seen[1]
     print(f"   cambios: {seen[0]} grabados · {seen[1]} descartados por lejanos "
           f"({100*seen[1]/tot if tot else 0:.0f}%)", flush=True)
