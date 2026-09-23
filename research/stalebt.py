@@ -36,6 +36,7 @@ LAB = os.path.join(DIR, "lab")
 def fee(p): return 0.07 * p * (1 - p)
 
 
+_WS2CID = None
 CACHE = os.path.join(LAB, "clob_reso_stale.csv")
 
 
@@ -53,15 +54,20 @@ def clob_winner(cid):
 def load_reso(need=()):
     """ws → 'Up'/'Down'. queuewatch guarda ws, no cid: el puente está en books_*.csv del laboratorio.
     Las cachés solo tienen ventanas que algún análisis miró ANTES, así que las de hoy hay que pedirlas."""
-    ws2cid = {}
-    for path in sorted(glob.glob(os.path.join(LAB, "books_*.csv"))):
-        with open(path, encoding="utf-8") as fh:
-            rd = csv.reader(fh); next(rd, None)
-            for row in rd:
-                if len(row) < 3 or not row[1].startswith("btc-updown-5m-"): continue
-                try: w = int(row[1].split("-")[-1])
-                except Exception: continue
-                if w not in ws2cid: ws2cid[w] = row[2]
+    global _WS2CID
+    if _WS2CID is not None:
+        ws2cid = _WS2CID
+    else:
+        ws2cid = {}
+        for path in sorted(glob.glob(os.path.join(LAB, "books_*.csv"))):
+            with open(path, encoding="utf-8") as fh:
+                rd = csv.reader(fh); next(rd, None)
+                for row in rd:
+                    if len(row) < 3 or not row[1].startswith("btc-updown-5m-"): continue
+                    try: w = int(row[1].split("-")[-1])
+                    except Exception: continue
+                    if w not in ws2cid: ws2cid[w] = row[2]
+        _WS2CID = ws2cid
     reso = {}
     for fn in ("clob_reso_mmtoxic.csv", "clob_reso_mmlogs.csv", "clob_reso_mw.csv",
                "clob_reso_win.csv", "clob_reso_tape.csv", "clob_reso_uni.csv",
@@ -94,38 +100,49 @@ def med(xs):
 
 
 def main():
-    paths = sorted(glob.glob(os.path.join(DIR, "queue_events_*.csv")))
-    if not paths: print("no hay queue_events_*.csv"); return
-    SP = []
-    EV = {}          # ws -> lista de eventos (t, tok, typ, side, price, size)
+    paths = sorted(glob.glob(os.path.join(DIR, 'queue_events_*.csv')))
+    if not paths: print('no hay queue_events_*.csv'); return
+    # Se procesa FICHERO A FICHERO (uno por dia). Cargarlo todo de golpe no cabe en la RAM de la Pi en
+    # cuanto hay varios dias: solo se acumulan los DISPAROS, que son unas decenas al dia.
+    ACC = {}
+    TOT = {'sp': 0, 'ev': 0, 'win': 0, 'fire': {}}
     for p in paths:
-        with open(p, encoding="utf-8") as fh:
+        SP = []; EV = {}
+        with open(p, encoding='utf-8') as fh:
             for r in csv.DictReader(fh):
-                try: t = float(r["ts"]); typ = r["typ"]
+                try: t = float(r['ts']); typ = r['typ']
                 except Exception: continue
-                if typ == "S":
-                    try: SP.append((t, float(r["price"])))
+                if typ == 'S':
+                    try: SP.append((t, float(r['price'])))
                     except Exception: pass
-                elif typ in ("B", "C"):
+                elif typ in ('B', 'C'):
                     try:
-                        ws = int(r["ws"]); px = float(r["price"]); sz = float(r["size"] or 0)
+                        ws = int(r['ws']); px = float(r['price']); sz = float(r['size'] or 0)
                     except Exception: continue
-                    sd = (r.get("side") or "").lower()
-                    side = "bid" if sd.startswith(("b", "buy")) else "ask"
-                    bb = r.get("bb"); ba = r.get("ba")
+                    sd = (r.get('side') or '').lower()
+                    side = 'bid' if sd.startswith(('b', 'buy')) else 'ask'
+                    bb = r.get('bb'); ba = r.get('ba')
                     try: bb = float(bb) if bb else None
                     except Exception: bb = None
                     try: ba = float(ba) if ba else None
                     except Exception: ba = None
-                    EV.setdefault(ws, []).append((t, r["tok"], side, px, sz, bb, ba))
-    SP.sort()
-    for ws in EV: EV[ws].sort()
-    print(f"spot: {len(SP):,} · ventanas: {len(EV)} · eventos: {sum(len(v) for v in EV.values()):,}",
-          flush=True)
-    if len(SP) < 2000: print("muestra corta — dejar grabando más"); return
-    sts = array("d", [t for t, _ in SP]); spx = array("d", [p for _, p in SP])
+                    EV.setdefault(ws, []).append((t, r['tok'], side, px, sz, bb, ba))
+        SP.sort()
+        for ws in EV: EV[ws].sort()
+        nev = sum(len(v) for v in EV.values())
+        TOT['sp'] += len(SP); TOT['win'] += len(EV); TOT['ev'] += nev
+        print(f"  {os.path.basename(p)}: spot {len(SP):,} · ventanas {len(EV)} · eventos {nev:,}", flush=True)
+        if len(SP) < 200 or not EV: continue
+        una_jornada(SP, EV, ACC, TOT)
+        del SP, EV
+    print()
+    print(f"TOTAL: spot {TOT['sp']:,} · ventanas {TOT['win']} · eventos {TOT['ev']:,}", flush=True)
+    tablas(ACC, TOT)
+
+
+def una_jornada(SP, EV, ACC, TOT):
+    sts = array('d', [t for t, _ in SP]); spx = array('d', [p for _, p in SP])
     RES = load_reso(sorted(EV.keys()))
-    print(f"ventanas con resolución conocida: {sum(1 for w in EV if w in RES)} de {len(EV)}", flush=True)
 
     def sp_at(t):
         i = bisect.bisect_right(sts, t) - 1
@@ -162,55 +179,66 @@ def main():
         _, b, a, asz = ser[i]
         return (b, a, asz, (b + a) / 2)
 
-    # ---------- disparos ----------
+    # ---------- disparos: se ACUMULAN, las tablas se imprimen al final ----------
     for J in JUMPS:
-        FIRE = []          # (ws, t, tok favorecido)
+        FIRE = []
         for ws, ev in EV.items():
             t0 = ev[0][0]; t1 = ev[-1][0]
             i = bisect.bisect_left(sts, t0); last = -99
             while i < len(sts) and sts[i] < t1 - SETTLE:
                 t = sts[i]; a = sp_at(t - JW)
                 if a is not None and abs(spx[i] - a) >= J and t - last > COOL:
-                    FIRE.append((ws, t, "Up" if spx[i] > a else "Down")); last = t
+                    FIRE.append((ws, t, 'Up' if spx[i] > a else 'Down')); last = t
                 i += 1
-        if len(FIRE) < 25:
-            print(f"\nsaltos ≥${J:.0f}: solo {len(FIRE)} — muestra corta"); continue
+        TOT['fire'][J] = TOT['fire'].get(J, 0) + len(FIRE)
         bywin = {}
         for ws, t, tok in FIRE: bywin.setdefault(ws, []).append((t, tok))
-        print("\n" + "=" * 104)
-        print(f"  SALTOS DE BTC ≥${J:.0f} en {JW:.0f}s · n={len(FIRE)} · comprar el lado favorecido L después")
-        print("=" * 104)
+        for L in LAT:
+            a = ACC.setdefault((J, L), {'rows': [], 'mir': [], 'win': 0})
+            a['win'] += len(bywin)
+            for ws, lst in bywin.items():
+                w1 = RES.get(ws)
+                for t, tok in lst:
+                    other = 'Down' if tok == 'Up' else 'Up'
+                    for who, key in ((tok, 'rows'), (other, 'mir')):
+                        q = at(ws, who, t + L); r2 = at(ws, who, t + SETTLE)
+                        if not q or not r2: continue
+                        a[key].append({'ask': q[1], 'sz': q[2], 'end': r2[3],
+                                       'won': (1 if w1 == who else 0) if w1 else None})
+
+
+def stat(xs):
+    if len(xs) < 20: return float('nan'), float('nan')
+    m = mean(xs)
+    v = math.sqrt(sum((x - m) ** 2 for x in xs) / (len(xs) - 1)) / math.sqrt(len(xs))
+    return 100 * m, 100 * v
+
+
+def tablas(ACC, TOT):
+    for J in JUMPS:
+        n = TOT['fire'].get(J, 0)
+        if n < 25:
+            print(f'saltos >= ${J:.0f}: solo {n} - muestra corta'); continue
+        print()
+        print('=' * 104)
+        print(f'  SALTOS DE BTC >= ${J:.0f} en {JW:.0f}s · n={n} · comprar el lado favorecido L despues')
+        print('=' * 104)
         print(f"  {'latencia':>10}{'ventanas':>10}{'con ask':>9}{'ask':>7}{'tam.':>7}"
               f"{'medio {:.0f}s'.format(SETTLE):>11}{'neto mid':>17}{'espejo':>8}"
               f"{'n res':>7}{'NETO RESOL.':>20}")
         for L in LAT:
-            rows = []; mir = []
-            for ws, lst in bywin.items():
-                w1 = RES.get(ws)
-                for t, tok in lst:
-                    other = "Down" if tok == "Up" else "Up"
-                    for who, dst in ((tok, rows), (other, mir)):
-                        q = at(ws, who, t + L); r2 = at(ws, who, t + SETTLE)
-                        if not q or not r2: continue
-                        dst.append({"ask": q[1], "sz": q[2], "end": r2[3],
-                                    "won": (1 if w1 == who else 0) if w1 else None})
-            if len(rows) < 20: continue
-            # Con barras de error: el resultado a RESOLUCIÓN es binario (desviación ~50pp por operación),
-            # así que con unos cientos de disparos su error típico es de varios puntos y no distingue nada.
-            # El markout contra el medio es el estimador de baja varianza, y por eso es el que manda.
-            def stat(xs):
-                if len(xs) < 20: return float("nan"), float("nan")
-                m = mean(xs)
-                v = math.sqrt(sum((x - m) ** 2 for x in xs) / (len(xs) - 1)) / math.sqrt(len(xs))
-                return 100 * m, 100 * v
-            n, en = stat([r["end"] - r["ask"] - fee(r["ask"]) for r in rows])
-            gm, _ = stat([r["end"] - r["ask"] - fee(r["ask"]) for r in mir])
-            rr = [r for r in rows if r["won"] is not None]
-            nr, er = stat([r["won"] - r["ask"] - fee(r["ask"]) for r in rr])
-            print(f"  {L:>8.2f}s{len(bywin):>10}{len(rows):>9}{mean([r['ask'] for r in rows]):>7.3f}"
+            a = ACC.get((J, L))
+            if not a or len(a['rows']) < 20: continue
+            rows = a['rows']; mir = a['mir']
+            nm, en = stat([r['end'] - r['ask'] - fee(r['ask']) for r in rows])
+            gm, _ = stat([r['end'] - r['ask'] - fee(r['ask']) for r in mir])
+            rr = [r for r in rows if r['won'] is not None]
+            nr, er = stat([r['won'] - r['ask'] - fee(r['ask']) for r in rr])
+            print(f"  {L:>8.2f}s{a['win']:>10}{len(rows):>9}{mean([r['ask'] for r in rows]):>7.3f}"
                   f"{med([r['sz'] for r in rows]):>7.0f}{mean([r['end'] for r in rows]):>11.3f}"
-                  f"{f'{n:+.2f} ± {en:.2f}':>17}{gm:>+8.2f}{len(rr):>7}"
+                  f"{f'{nm:+.2f} ± {en:.2f}':>17}{gm:>+8.2f}{len(rr):>7}"
                   f"{f'{nr:+.2f} ± {er:.2f}':>20}")
+
 
     print()
     print("LECTURA: el numero que manda es 'neto mid': marca contra el medio ya asentado y su error")
