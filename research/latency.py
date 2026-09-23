@@ -86,15 +86,35 @@ def main():
 
     # 3) Pi → Polymarket
     print("\n  3) PI → POLYMARKET  (cuánto tarda en salir la orden; cota INFERIOR)")
-    cold = []
+    # conexión NUEVA cada vez (TCP + TLS + petición). Sin User-Agent, Cloudflare rechaza y salía sin muestra.
+    cold = []; err = None
     for _ in range(N_HTTP):
         try:
             t0 = time.time()
-            with urllib.request.urlopen(CLOB, timeout=8) as r: r.read(256)
+            rq = urllib.request.Request(CLOB, headers={"User-Agent": "lat/1.0"})
+            with urllib.request.urlopen(rq, timeout=8) as r: r.read(256)
             cold.append((time.time() - t0) * 1000.0)
-        except Exception: pass
+        except Exception as e: err = e
         time.sleep(0.1)
-    show("ida y vuelta HTTP (conexión nueva)", cold)
+    show("HTTP con conexión nueva (TLS incl.)", cold)
+    if not cold and err: print(f"     motivo: {err}")
+
+    # conexión REUTILIZADA: es como lo haría un bot de verdad, y es el número que manda
+    warmhttp = []
+    try:
+        import http.client
+        c = http.client.HTTPSConnection("clob.polymarket.com", timeout=8)
+        c.request("GET", "/ok", headers={"User-Agent": "lat/1.0"}); c.getresponse().read()
+        for _ in range(N_HTTP):
+            t0 = time.time()
+            c.request("GET", "/ok", headers={"User-Agent": "lat/1.0"})
+            c.getresponse().read()
+            warmhttp.append((time.time() - t0) * 1000.0)
+            time.sleep(0.05)
+        c.close()
+    except Exception as e:
+        print(f"     conexión reutilizada: {e}")
+    show("HTTP con conexión ABIERTA (real)", warmhttp)
     def tcp(host, n=N_HTTP):
         out = []
         for _ in range(n):
@@ -123,6 +143,9 @@ def main():
             Account.sign_message(msg, private_key=acct.key)
             sig.append((time.perf_counter() - t0) * 1000.0)
         show("firmar en esta CPU", sig)
+        if sig and statistics.median(sig) > 3:
+            print("     ⚠ más de 3 ms para firmar = eth_account va en Python puro. Con la extensión en C")
+            print("       baja a décimas: pip install coincurve --break-system-packages")
     except ImportError:
         print("     falta eth_account — instalar para medirlo "
               "(pip install eth-account --break-system-packages)")
@@ -142,7 +165,12 @@ def main():
     print("  Lo que SÍ consume presupuesto es solo lo que viene DESPUÉS de enterarnos:")
     parts = []
     if sig: parts.append(("firmar", statistics.median(sig)))
-    if cold: parts.append(("mandar la orden (HTTP)", statistics.median(cold)))
+    send = warmhttp or cold
+    if send:
+        parts.append((("mandar la orden (conexión abierta)" if warmhttp
+                       else "mandar la orden (conexión nueva)"), statistics.median(send)))
+    else:
+        print("\n  ⚠ sin medida de envío de la orden: el total de abajo está INCOMPLETO y es optimista")
     if pmws: parts.append(("recibir el libro (TCP al WSS)", statistics.median(pmws)))
     if not parts:
         print("\n  no se pudo componer el total — revisar los avisos de arriba"); return
