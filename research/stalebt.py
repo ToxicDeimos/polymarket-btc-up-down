@@ -55,7 +55,12 @@ def main():
                     except Exception: continue
                     sd = (r.get("side") or "").lower()
                     side = "bid" if sd.startswith(("b", "buy")) else "ask"
-                    EV.setdefault(ws, []).append((t, r["tok"], typ, side, px, sz))
+                    bb = r.get("bb"); ba = r.get("ba")
+                    try: bb = float(bb) if bb else None
+                    except Exception: bb = None
+                    try: ba = float(ba) if ba else None
+                    except Exception: ba = None
+                    EV.setdefault(ws, []).append((t, r["tok"], side, px, sz, bb, ba))
     SP.sort()
     for ws in EV: EV[ws].sort()
     print(f"spot: {len(SP):,} · ventanas: {len(EV)} · eventos: {sum(len(v) for v in EV.values()):,}",
@@ -67,28 +72,36 @@ def main():
         i = bisect.bisect_right(sts, t) - 1
         return spx[i] if (i >= 0 and t - sts[i] <= 2.0) else None
 
-    # ---------- reconstrucción del libro y fotogramas en los instantes que interesan ----------
-    def snapshots(ws, times):
-        """devuelve {t: {tok: (bid, ask, ask_size, mid)}} reconstruyendo el libro evento a evento."""
-        want = sorted(set(times)); out = {}
-        bk = {"Up": {"bid": {}, "ask": {}}, "Down": {"bid": {}, "ask": {}}}
-        j = 0
-        def best(tok):
-            b = bk[tok]["bid"]; a = bk[tok]["ask"]
-            bb = max((p for p, s in b.items() if s > 0), default=None)
-            ba = min((p for p, s in a.items() if s > 0), default=None)
-            if bb is None or ba is None or not (0 < bb < ba < 1): return None
-            return (bb, ba, a[ba], (bb + ba) / 2)
-        for t, tok, typ, side, px, sz in EV[ws]:
-            while j < len(want) and want[j] < t:
-                out[want[j]] = {k: best(k) for k in ("Up", "Down")}; j += 1
-            if typ == "B" and not bk[tok][side]:
-                bk[tok][side][px] = sz
-            else:
-                bk[tok][side][px] = sz
-        while j < len(want):
-            out[want[j]] = {k: best(k) for k in ("Up", "Down")}; j += 1
+    # ---------- serie (ts, bid, ask, tamaño del ask) por token, UNA sola pasada por ventana ----------
+    # El mejor bid/ask NO se reconstruye: viene en cada evento (bb/ba) del propio exchange. Reconstruirlo
+    # fallaba porque el filtro de banda de queuewatch deja de actualizar los niveles que se alejan y estos
+    # se quedan congelados con tamaño >0, apareciendo bids fantasma por encima del ask.
+    # El libro solo se usa para saber el TAMAÑO que hay en el nivel del mejor ask.
+    SER = {}
+
+    def series(ws):
+        s = SER.get(ws)
+        if s is not None: return s
+        lv = {"Up": {}, "Down": {}}                  # tok -> precio -> tamaño (solo asks)
+        cur = {"Up": [None, None], "Down": [None, None]}
+        out = {"Up": [], "Down": []}
+        for t, tok, side, px, sz, bb, ba in EV[ws]:
+            if side == "ask": lv[tok][px] = sz
+            if bb is not None: cur[tok][0] = bb
+            if ba is not None: cur[tok][1] = ba
+            b, a = cur[tok]
+            if b is None or a is None or not (0 < b < a < 1): continue
+            out[tok].append((t, b, a, lv[tok].get(a, 0.0)))
+        SER[ws] = out
         return out
+
+    def at(ws, tok, t):
+        ser = series(ws)[tok]
+        if not ser: return None
+        i = bisect.bisect_right(ser, (t, 9, 9, 9)) - 1
+        if i < 0 or t - ser[i][0] > 5.0: return None
+        _, b, a, asz = ser[i]
+        return (b, a, asz, (b + a) / 2)
 
     # ---------- disparos ----------
     for J in JUMPS:
@@ -113,18 +126,12 @@ def main():
         for L in LAT:
             rows = []; mir = []
             for ws, lst in bywin.items():
-                times = []
-                for t, tok in lst: times += [t + L, t + SETTLE]
-                snaps = snapshots(ws, times)
                 for t, tok in lst:
-                    s0 = snaps.get(t + L); s1 = snaps.get(t + SETTLE)
-                    if not s0 or not s1: continue
                     other = "Down" if tok == "Up" else "Up"
                     for who, dst in ((tok, rows), (other, mir)):
-                        q = s0.get(who); r2 = s1.get(who)
+                        q = at(ws, who, t + L); r2 = at(ws, who, t + SETTLE)
                         if not q or not r2: continue
-                        bb, ba, asz, mid0 = q
-                        dst.append({"ask": ba, "sz": asz, "end": r2[3]})
+                        dst.append({"ask": q[1], "sz": q[2], "end": r2[3]})
             if len(rows) < 20: continue
             g = mean([r["end"] - r["ask"] for r in rows])
             n = mean([r["end"] - r["ask"] - fee(r["ask"]) for r in rows])
