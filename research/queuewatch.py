@@ -85,6 +85,7 @@ def run_window(ws, mk):
     toks = mk["toks"]; id2 = {toks["Up"]: "Up", toks["Down"]: "Down"}
     close = ws + 300
     touch = {"Up": [None, None], "Down": [None, None]}      # último [bb, ba] conocido por token
+    prev = {"Up": [None, None], "Down": [None, None]}       # último [bb, ba] YA grabado
     seen = [0, 0]                                           # [grabadas, descartadas]
 
     def push(row):
@@ -126,6 +127,16 @@ def run_window(ws, mk):
                         bb = ch.get("best_bid", ""); ba = ch.get("best_ask", "")
                         if not near(tok, px, bb, ba):
                             seen[1] += 1; continue           # lejos del toque: no interesa
+                        # De todo esto solo usamos el mejor bid/ask y el TAMAÑO EN EL TOQUE. Un cambio de
+                        # tamaño en un nivel que no es el toque y que no mueve el toque no aporta nada y
+                        # son >2 GB/día. Se graba solo si el toque cambió o si el nivel ES el toque.
+                        tt = touch[tok]
+                        movido = (prev[tok][0] != tt[0] or prev[tok][1] != tt[1])
+                        en_toque = (tt[0] is not None and abs(px - tt[0]) < 1e-9) or \
+                                   (tt[1] is not None and abs(px - tt[1]) < 1e-9)
+                        if not (movido or en_toque):
+                            seen[1] += 1; continue
+                        prev[tok][0], prev[tok][1] = tt[0], tt[1]
                         seen[0] += 1
                         push([t, ws, tok, "C", ch.get("side", ""), px,
                               float(ch.get("size", 0)), bb, ba])
