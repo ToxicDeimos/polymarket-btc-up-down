@@ -19,7 +19,7 @@ negocio es de céntimos o de dólares. Control: la misma regla comprando el toke
 
     cd ~/polymarket-btc-up-down/research && python3 stalebt.py
 """
-import csv, os, sys, glob, math, bisect
+import csv, os, sys, glob, math, time, json, bisect, urllib.request
 from array import array
 
 DIR = os.path.dirname(__file__)
@@ -36,8 +36,23 @@ LAB = os.path.join(DIR, "lab")
 def fee(p): return 0.07 * p * (1 - p)
 
 
-def load_reso():
-    """ws → 'Up'/'Down'. queuewatch guarda ws, no cid: el puente está en books_*.csv del laboratorio."""
+CACHE = os.path.join(LAB, "clob_reso_stale.csv")
+
+
+def clob_winner(cid):
+    try:
+        rq = urllib.request.Request(f"https://clob.polymarket.com/markets/{cid}",
+                                    headers={"User-Agent": "stale/1.0"})
+        with urllib.request.urlopen(rq, timeout=10) as r: d = json.load(r)
+        for t in d.get("tokens", []):
+            if t.get("winner") is True: return t.get("outcome")
+    except Exception: pass
+    return None
+
+
+def load_reso(need=()):
+    """ws → 'Up'/'Down'. queuewatch guarda ws, no cid: el puente está en books_*.csv del laboratorio.
+    Las cachés solo tienen ventanas que algún análisis miró ANTES, así que las de hoy hay que pedirlas."""
     ws2cid = {}
     for path in sorted(glob.glob(os.path.join(LAB, "books_*.csv"))):
         with open(path, encoding="utf-8") as fh:
@@ -49,12 +64,30 @@ def load_reso():
                 if w not in ws2cid: ws2cid[w] = row[2]
     reso = {}
     for fn in ("clob_reso_mmtoxic.csv", "clob_reso_mmlogs.csv", "clob_reso_mw.csv",
-               "clob_reso_win.csv", "clob_reso_tape.csv", "clob_reso_uni.csv"):
+               "clob_reso_win.csv", "clob_reso_tape.csv", "clob_reso_uni.csv",
+               "clob_reso_stale.csv"):
         p = os.path.join(LAB, fn)
         if os.path.exists(p):
             for r in csv.DictReader(open(p, encoding="utf-8")):
                 if r.get("winner"): reso[r["cid"]] = r["winner"]
+    falta = [w for w in need if w in ws2cid and ws2cid[w] not in reso]
+    sincid = [w for w in need if w not in ws2cid]
+    print(f"  puente ws→cid: {len(need)-len(sincid)} de {len(need)} · "
+          f"ya en caché: {len(need)-len(sincid)-len(falta)} · por pedir: {len(falta)}", flush=True)
+    if falta:
+        nuevo = not os.path.exists(CACHE)
+        with open(CACHE, "a", newline="", encoding="utf-8") as fo:
+            cw = csv.writer(fo)
+            if nuevo: cw.writerow(["cid", "winner"])
+            for i, w in enumerate(falta):
+                cid = ws2cid[w]
+                win = clob_winner(cid)
+                if win: reso[cid] = win; cw.writerow([cid, win]); fo.flush()
+                time.sleep(0.12)
+                if (i + 1) % 25 == 0: print(f"    … {i+1}/{len(falta)}", flush=True)
     return {w: reso[c] for w, c in ws2cid.items() if c in reso}
+
+
 def mean(xs): return sum(xs) / len(xs) if xs else float("nan")
 def med(xs):
     s = sorted(xs); return s[len(s) // 2] if s else float("nan")
@@ -91,7 +124,7 @@ def main():
           flush=True)
     if len(SP) < 2000: print("muestra corta — dejar grabando más"); return
     sts = array("d", [t for t, _ in SP]); spx = array("d", [p for _, p in SP])
-    RES = load_reso()
+    RES = load_reso(sorted(EV.keys()))
     print(f"ventanas con resolución conocida: {sum(1 for w in EV if w in RES)} de {len(EV)}", flush=True)
 
     def sp_at(t):
