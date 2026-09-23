@@ -25,7 +25,7 @@ from collections import deque
 DIR = os.path.dirname(__file__)
 WSS = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 H = ["ts", "ws", "tok", "typ", "side", "price", "size", "bb", "ba"]
-LAT = (0, 100, 250, 500, 1000, 2000, 5000)      # latencias a evaluar, ms
+LAT = (0, 10, 25, 50, 100, 250, 500, 1000, 2000, 5000)      # latencias a evaluar, ms
 BAND = 0.05      # solo grabamos cerca del toque: en la primera prueba el 95% de los eventos eran alguien
                  # moviendo 11.000 acciones en 0,01/0,99 con el toque en 0,77 — 3 GB/día de ruido puro.
 LOCK = threading.Lock()
@@ -189,25 +189,33 @@ def analyze():
     for k in ev: ev[k].sort()
     for k in trades: trades[k].sort()
 
-    # colas nuevas: el toque salta a un precio que no era el toque
-    cols = []      # (t0, tamaño inicial, trayectoria [(t,size)], volumen negociado en el nivel, vida)
+    # El toque cambia de precio. CLAVE: casi nunca nace una cola limpia — el toque DESCIENDE a un nivel que
+    # ya existía, con su cola formada mientras estaba en segunda fila. Solo si el precio estaba VACÍO empieza
+    # una cola virgen, y solo ahí puede decidir la velocidad. Separamos los dos casos.
+    cols = []      # (clase, t0, trayectoria, volumen, vida, tamaño previo)
     for (ws, tok, sd), rows in ev.items():
         touch_prev = None
         lvl = {}                                    # precio -> último tamaño conocido
-        births = {}                                 # precio -> t de nacimiento como toque
+        births = []                                 # (precio, t0, clase, tamaño previo)
         for t, px, sz, bb, ba in rows:
-            lvl[px] = sz
             touch = bb if sd == "bid" else ba
-            if touch is None: continue
-            if touch_prev is None or abs(touch - touch_prev) > 1e-9:
-                if touch not in births: births[touch] = t
+            if touch is not None and (touch_prev is None or abs(touch - touch_prev) > 1e-9):
+                prev = lvl.get(touch)
+                if prev is None:   kl, sb = "desconocida", None
+                elif prev <= 0:    kl, sb = "virgen", 0.0
+                else:              kl, sb = "heredada", prev
+                births.append((touch, t, kl, sb))
                 touch_prev = touch
-        for px, t0 in births.items():
-            traj = [(t, s) for t, p, s, _, _ in rows if abs(p - px) < 1e-9 and t >= t0]
-            if not traj: continue
-            end = max(t for t, _ in traj)
-            vol = sum(s for t, p, s in trades.get((ws, tok), []) if abs(p - px) < 1e-9 and t0 <= t <= end + 1)
-            cols.append((t0, traj, vol, end - t0))
+            lvl[px] = sz                            # actualizar DESPUÉS de clasificar
+        tlast = rows[-1][0]
+        for i, (px, t0, kl, sb) in enumerate(births):
+            end = births[i + 1][1] if i + 1 < len(births) else tlast
+            if end <= t0: continue
+            traj = [(t, s) for t, p, s, _, _ in rows if abs(p - px) < 1e-9 and t0 <= t <= end]
+            if not traj: traj = [(t0, sb or 0.0)]
+            vol = sum(s for t, p, s in trades.get((ws, tok), [])
+                      if abs(p - px) < 1e-9 and t0 <= t <= end + 1)
+            cols.append((kl, t0, traj, vol, end - t0, sb))
     if not cols:
         print("no se han reconstruido colas — revisar el formato de los eventos"); return
 
@@ -218,32 +226,46 @@ def analyze():
             else: break
         return s
 
-    lives = sorted(c[3] for c in cols)
-    vols = sorted(c[2] for c in cols)
-    print(f"\ncolas nuevas reconstruidas: {len(cols)}")
+    lives = sorted(c[4] for c in cols)
+    vols = sorted(c[3] for c in cols)
+    cnt = {}
+    for c in cols: cnt[c[0]] = cnt.get(c[0], 0) + 1
+    print(f"\ncambios de toque reconstruidos: {len(cols)}")
     print(f"  vida del nivel en el toque: mediana {lives[len(lives)//2]:.1f}s · p90 {lives[int(.9*len(lives))]:.1f}s")
     print(f"  volumen negociado en el nivel: mediana {vols[len(vols)//2]:.0f} · p90 {vols[int(.9*len(vols))]:.0f} shares")
+    print("  clase del nivel al pasar a ser el toque: " +
+          " · ".join(f"{k} {v} ({100*v/len(cols):.0f}%)" for k, v in sorted(cnt.items(), key=lambda kv: -kv[1])))
+    her = [c[5] for c in cols if c[0] == "heredada" and c[5]]
+    if her:
+        her.sort()
+        print(f"  cola YA formada al heredar el nivel: mediana {her[len(her)//2]:.0f} · "
+              f"p90 {her[int(.9*len(her))]:.0f} shares")
 
-    print("\n" + "=" * 92)
-    print("  SI PUBLICAMOS X ms DESPUÉS DE QUE NAZCA EL NIVEL (prioridad precio-tiempo)")
-    print("=" * 92)
-    print(f"  {'latencia':>10}{'delante (mediana)':>20}{'delante (p90)':>16}{'nos llenan':>13}"
-          f"{'llenan ≥5 sh':>14}")
-    for X in LAT:
-        ahead = []; fill = []; fill5 = []
-        for t0, traj, vol, _ in cols:
-            a = size_at(traj, t0 + X / 1000.0)
-            ahead.append(a)
-            fill.append(1 if vol > a else 0)
-            fill5.append(1 if vol - a >= 5 else 0)
-        ahead.sort()
-        print(f"  {X:>8} ms{ahead[len(ahead)//2]:>20.0f}{ahead[int(.9*len(ahead))]:>16.0f}"
-              f"{100*sum(fill)/len(fill):>12.0f}%{100*sum(fill5)/len(fill5):>13.0f}%")
+    for kl in ("virgen", "heredada", "desconocida"):
+        sub = [c for c in cols if c[0] == kl]
+        if len(sub) < 20: continue
+        print("\n" + "=" * 92)
+        print(f"  NIVEL {kl.upper()} (n {len(sub)}) — si publicamos X ms después de que pase a ser el toque")
+        print("=" * 92)
+        print(f"  {'latencia':>10}{'delante (mediana)':>20}{'delante (p90)':>16}{'nos llenan':>13}"
+              f"{'llenan ≥5 sh':>14}")
+        for X in LAT:
+            ahead = []; fill = []; fill5 = []
+            for _, t0, traj, vol, _, _ in sub:
+                a = size_at(traj, t0 + X / 1000.0)
+                ahead.append(a)
+                fill.append(1 if vol > a else 0)
+                fill5.append(1 if vol - a >= 5 else 0)
+            ahead.sort()
+            print(f"  {X:>8} ms{ahead[len(ahead)//2]:>20.0f}{ahead[int(.9*len(ahead))]:>16.0f}"
+                  f"{100*sum(fill)/len(fill):>12.0f}%{100*sum(fill5)/len(fill5):>13.0f}%")
 
-    print("\nLECTURA: si a 250 ms ya hay cientos de acciones delante y el 'nos llenan' apenas sube respecto a")
-    print("2000 ms, la cola está perdida de antemano y correr no sirve: el maker queda cerrado del todo. Si el")
-    print("salto entre 2000 ms y 250 ms es grande, la prioridad ES alcanzable y el siguiente paso es medir")
-    print("nuestra latencia real de publicación (una orden mínima, lejos del mercado, que no puede ejecutarse).")
+    print("\nLECTURA: la fila que decide es la de nivel VIRGEN (el toque salta a un precio donde no había nada):")
+    print("es el único momento en que la cola empieza de cero y la velocidad puede ganarla. Si ahí el salto")
+    print("entre 2000 ms y 50 ms es grande, la prioridad ES alcanzable y toca medir nuestra latencia real de")
+    print("publicación (una orden mínima, lejos del mercado, que no puede ejecutarse). En los niveles")
+    print("HEREDADOS correr no sirve por construcción: la cola se formó mientras el nivel estaba en segunda")
+    print("fila. Si los vírgenes son una minoría y además no dan salto, el maker queda cerrado del todo.")
 
 
 if __name__ == "__main__":
