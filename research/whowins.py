@@ -46,7 +46,7 @@ def main():
                 if r.get("winner"): reso[r["cid"]] = r["winner"]
     print(f"resoluciones en caché: {len(reso)}", flush=True)
 
-    # POS[(wallet, cid, outcome)] = [acciones netas, efectivo, n ops, ts mínimo, slug]
+    # POS[(wallet, cid, outcome)] = [acciones netas, efectivo, n ops, ts mínimo, slug, Σp·size, Σsize]
     POS = {}
     seen = set(); nrow = 0
     for path in sorted(glob.glob(os.path.join(DIR, "tape_*.csv"))):
@@ -65,49 +65,75 @@ def main():
                 if sz <= 0: continue
                 nrow += 1
                 buy = (r.get("trade_side") or "").upper().startswith("B")
-                a = POS.setdefault((wal, r.get("cid"), oc), [0.0, 0.0, 0, ts, slug])
+                a = POS.setdefault((wal, r.get("cid"), oc), [0.0, 0.0, 0, ts, slug, 0.0, 0.0])
                 a[0] += sz if buy else -sz
                 a[1] += (-px * sz) if buy else (px * sz)
                 a[2] += 1
                 a[3] = min(a[3], ts)
+                a[5] += px * sz; a[6] += sz
     print(f"operaciones únicas en la cinta global: {nrow} · posiciones: {len(POS)}", flush=True)
-    ncomp = sum(1 for p in glob.glob(os.path.join(DIR, "wintrades_*.csv")))
-    print(f"(cinta completa por ventana en {ncomp} ficheros wintrades_*; la global va muestreada)", flush=True)
+    # cobertura real: la cinta global va muestreada; la de ventana es completa. Sin esto no se puede
+    # interpretar "cierran planas", porque para ver una posición cerrada hay que capturar SUS DOS patas.
+    cids = set(c for _, c, _ in POS)
+    comp = set()
+    for path in sorted(glob.glob(os.path.join(DIR, "wintrades_*.csv"))):
+        with open(path, encoding="utf-8") as fh:
+            for r in csv.DictReader(fh):
+                if r.get("cid") in cids:
+                    comp.add((r.get("tx", ""), r.get("outcome"), r.get("price"),
+                              r.get("trade_side"), r.get("ts_trade")))
+    cov = len(seen) / len(comp) if comp else float("nan")
+    print(f"cobertura de la cinta global: {len(seen):,} de {len(comp):,} operaciones = {100*cov:.0f}%"
+          f"  ⇒ ver las DOS patas de un round-trip ocurre ~{100*cov*cov:.0f}% de las veces", flush=True)
     if not POS:
         print("sin datos de cinta con wallet — ¿existe tape_*.csv?"); return
 
-    # P&L por posición
-    W = {}     # wallet -> {pnl: [...], vol, nwin: set, buys, sells, px: [], flat, hold, slugs:set}
-    for (wal, cid, oc), (sh, cash, n, ts, slug) in POS.items():
+    # P&L por posición, separando el dinero CON riesgo del dinero SIN riesgo.
+    # Hipótesis nula = "el precio es justo": si compras sh acciones a un precio medio p, ganas sh(1−p) con
+    # probabilidad p y pierdes sh·p con probabilidad 1−p ⇒ esperanza 0 y VARIANZA CONOCIDA sh²·p(1−p).
+    # Deducirla del precio (y no de la muestra) evita el artefacto que rompía la versión anterior: una wallet
+    # que gana sus 20 apuestas al favorito a 0,95 tiene desviación observada ≈0 y z infinito, y eso solo
+    # infla la cola DERECHA porque "ganarlas todas" es fácil y "perderlas todas" no.
+    W = {}
+    for (wal, cid, oc), (sh, cash, n, ts, slug, pxsz, szs) in POS.items():
         win = reso.get(cid)
         if win not in ("Up", "Down"): continue
         pnl = cash + sh * (1.0 if win == oc else 0.0)
-        nominal = abs(cash) if abs(cash) > 1e-9 else abs(sh)
+        p = (pxsz / szs) if szs > 0 else 0.5
+        p = min(max(p, 1e-4), 1 - 1e-4)
+        flat = abs(sh) < 1e-6
         w = W.setdefault(wal, {"pnl": [], "vol": 0.0, "win": set(), "buys": 0, "sells": 0,
-                               "flat": 0, "hold": 0, "n": 0, "px": []})
-        w["pnl"].append(pnl); w["vol"] += nominal; w["win"].add(cid); w["n"] += n
-        if abs(sh) < 1e-6: w["flat"] += 1
-        else: w["hold"] += 1
+                               "flat": 0, "hold": 0, "n": 0, "exc": 0.0, "var": 0.0, "free": 0.0})
+        w["pnl"].append(pnl); w["vol"] += abs(cash) if abs(cash) > 1e-9 else abs(sh)
+        w["win"].add(cid); w["n"] += n
+        if flat:
+            w["flat"] += 1; w["free"] += pnl          # round-trip cerrado: sin exposición al resultado
+        else:
+            w["hold"] += 1
+            w["exc"] += pnl - (cash + sh * p)          # exceso sobre lo que dicta el precio de entrada
+            w["var"] += (sh ** 2) * p * (1 - p)        # varianza teórica de esa exposición
         if sh > 0: w["buys"] += 1
         elif sh < 0: w["sells"] += 1
-        if n: w["px"].append(abs(cash) / max(abs(sh), 1e-9) if abs(sh) > 1e-9 else 0.5)
 
     tot_pnl = sum(sum(w["pnl"]) for w in W.values())
     print(f"wallets: {len(W)} · ventanas distintas: {len(set(c for _, c, _ in POS))} · "
           f"P&L agregado ${tot_pnl:,.0f}", flush=True)
 
+    def zof(w):
+        return (w["exc"] / math.sqrt(w["var"])) if w["var"] > 1e-9 else None
+
     rk = sorted(W.items(), key=lambda kv: -sum(kv[1]["pnl"]))
-    print("\n" + "=" * 104)
+    print("\n" + "=" * 112)
     print("  A) CENSO: las 12 wallets más rentables (P&L reconstruido posición a posición)")
-    print("=" * 104)
+    print("=" * 112)
     print(f"  {'wallet':>14}{'posiciones':>12}{'ventanas':>10}{'P&L $':>12}{'$/posición':>12}"
-          f"{'compra%':>9}{'planas%':>9}{'z':>7}")
+          f"{'compra%':>9}{'planas%':>9}{'sin riesgo $':>14}{'z':>7}")
     for wal, w in rk[:12]:
-        p = w["pnl"]; s = sd(p)
-        z = (mean(p) / (s / math.sqrt(len(p)))) if (s > 0 and len(p) > 1) else float("nan")
+        p = w["pnl"]; z = zof(w)
         print(f"  {wal[:12]:>14}{len(p):>12}{len(w['win']):>10}{sum(p):>12,.0f}{mean(p):>12.2f}"
               f"{100*w['buys']/max(1,w['buys']+w['sells']):>8.0f}%"
-              f"{100*w['flat']/max(1,len(p)):>8.0f}%{z:>+7.2f}")
+              f"{100*w['flat']/max(1,len(p)):>8.0f}%{w['free']:>14,.0f}"
+              f"{(f'{z:+.2f}' if z is not None else '—'):>7}")
     pos = [w for _, w in rk if sum(w["pnl"]) > 0]
     top10 = sum(sum(w["pnl"]) for _, w in rk[:10])
     print(f"\n  rentables: {len(pos)}/{len(W)} ({100*len(pos)/len(W):.0f}%) · "
@@ -115,13 +141,20 @@ def main():
           f"({100*top10/tot_pnl if tot_pnl else float('nan'):.0f}% del beneficio agregado)")
 
     # ---------- B) habilidad o supervivencia ----------
-    for MINP in (20, 50):
-        cand = [(wal, w) for wal, w in W.items() if len(w["pnl"]) >= MINP and sd(w["pnl"]) > 0]
+    # POTENCIA: con z = e·√n/√(p(1−p)), un edge de 2pp a precio 0,5 necesita ~2.500 posiciones para llegar
+    # a z=2. Los cortes bajos NO pueden detectar un edge real: cualquier exceso ahí es artefacto. Por eso se
+    # mira sobre todo el corte alto, donde sí hay potencia.
+    for e in (0.01, 0.02, 0.05):
+        need = (2 * 0.5 / e) ** 2
+        print(f"  potencia: para ver un edge de {100*e:.0f}pp con z=2 hacen falta ~{need:,.0f} posiciones")
+    for MINP in (50, 500, 2000):
+        cand = [(wal, w) for wal, w in W.items() if len(w["pnl"]) >= MINP and zof(w) is not None]
         if len(cand) < 20: continue
-        zs = [mean(w["pnl"]) / (sd(w["pnl"]) / math.sqrt(len(w["pnl"]))) for _, w in cand]
+        zs = [zof(w) for _, w in cand]
         N = len(zs)
         print("\n" + "=" * 104)
         print(f"  B) ¿HABILIDAD O SUPERVIVENCIA? · wallets con ≥{MINP} posiciones (n={N})")
+        print("     z = exceso sobre el precio de entrada / desviación TEÓRICA implícita en ese precio")
         print("=" * 104)
         print(f"  {'umbral':>10}{'observadas':>13}{'esperadas por azar':>21}{'exceso':>10}{'veces':>8}")
         for thr in (1.0, 1.5, 2.0, 2.5, 3.0):
@@ -138,7 +171,7 @@ def main():
         # ---------- C) ¿qué hacen distinto? ----------
         skilled = [w for (_, w), z in zip(cand, zs) if z > 2.0]
         rest = [w for (_, w), z in zip(cand, zs) if z <= 2.0]
-        if len(skilled) >= 5 and len(rest) >= 20:
+        if len(skilled) >= 3 and len(rest) >= 10:
             nwin_all = len(set(c for _, c, _ in POS))
             print(f"\n  C) QUÉ HACEN DISTINTO · {len(skilled)} con z>+2 frente a {len(rest)} del resto")
             print(f"  {'rasgo':>26}{'z>+2':>12}{'resto':>12}")
