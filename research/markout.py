@@ -16,6 +16,12 @@ Medimos la selección adversa EN FUNCIÓN DE LA EDAD, con MARKOUTS (cuánto se m
 que es como lo mide un creador de mercado y que no habíamos calculado nunca. Menos ruidoso que el resultado
 binario y separa "me llenaron porque el precio se movió" de "me llenaron y luego no pasó nada".
 
+⚠️ CORREGIDO 2026-09-23 (clocklag.py): las marcas de la cinta de la API van ~3 s POR DELANTE de las del libro
+que sella nuestro colector — pico de coincidencia precio↔cotización afilado y simétrico en d=3 en los DOS
+mercados. La primera versión de este script tomaba fotos del libro POSTERIORES a la operación y de ahí salía
+el "+0,7pp cotizando fresco": era look-ahead. Con OFFSET=3 la columna de edad es la REAL, y aparece un tramo
+"<0 imposible" que sirve de control: si esa fila luce muy bien, confirma que la contaminación estaba ahí.
+
   A) markout por EDAD de la cotización: si a 0-2 s es ~0 y a 10-20 s es −10pp, la lentitud es TODO el problema
      y mm_ws (ya montado) es la vía. Si es plano y malo a cualquier edad, la velocidad no salva al maker.
   B) lo mismo separando BARRIDO (la operación pasa POR ENCIMA de nuestro nivel: relleno seguro) de TOQUE
@@ -29,8 +35,10 @@ import csv, os, sys, glob, json, time, math, bisect, urllib.request
 
 DIR = os.path.join(os.path.dirname(__file__), "lab")
 CACHE = os.path.join(DIR, "clob_reso_mmtoxic.csv")
-AGE = [("0-2s", 0, 2), ("2-5s", 2, 5), ("5-8s", 5, 8), ("8-12s", 8, 12),
-       ("12-20s", 12, 20), (">20s", 20, 60)]
+OFFSET = 3       # clocklag: la cinta de la API va ~3 s POR DELANTE del reloj que sella el libro.
+                 # La edad de abajo es la REAL. Poner 0 reproduce la versión vieja (con look-ahead).
+AGE = [("<0 imposible", -99, 0), ("0-1s", 0, 1), ("1-2s", 1, 2), ("2-4s", 2, 4),
+       ("4-8s", 4, 8), ("8-15s", 8, 15), (">15s", 15, 60)]
 HOR = (5, 15, 30, 60)
 PB = [("<0,30", 0, .30), ("0,30-0,50", .30, .50), ("0,50-0,70", .50, .70),
       ("0,70-0,90", .70, .90), (">0,90", .90, 1.0)]
@@ -158,8 +166,8 @@ def main():
             if oc != side or ts > close - 5: continue
             k = bisect.bisect_right(tss, ts) - 1
             if k < 0: continue
-            age = ts - tss[k]
-            if age < 0 or age > MAXAGE: continue
+            age = (ts - OFFSET) - tss[k]          # edad REAL de la cotización, desfase corregido
+            if age < -4 or age > MAXAGE: continue
             a, b = asks[k], bids[k]
             if sd == "BUY" and pr >= a - 1e-9:
                 pos, px, swept = -1, a, pr > a + 1e-9        # nos levantan el ask: quedamos CORTOS
