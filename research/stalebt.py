@@ -181,8 +181,8 @@ def main():
         print(f"  SALTOS DE BTC ≥${J:.0f} en {JW:.0f}s · n={len(FIRE)} · comprar el lado favorecido L después")
         print("=" * 104)
         print(f"  {'latencia':>10}{'ventanas':>10}{'con ask':>9}{'ask':>7}{'tam.':>7}"
-              f"{'medio {:.0f}s'.format(SETTLE):>11}{'neto mid':>10}{'espejo':>8}"
-              f"{'n res':>7}{'NETO RESOL.':>13}{'$/disparo':>11}")
+              f"{'medio {:.0f}s'.format(SETTLE):>11}{'neto mid':>17}{'espejo':>8}"
+              f"{'n res':>7}{'NETO RESOL.':>20}")
         for L in LAT:
             rows = []; mir = []
             for ws, lst in bywin.items():
@@ -195,21 +195,34 @@ def main():
                         dst.append({"ask": q[1], "sz": q[2], "end": r2[3],
                                     "won": (1 if w1 == who else 0) if w1 else None})
             if len(rows) < 20: continue
-            n = mean([r["end"] - r["ask"] - fee(r["ask"]) for r in rows])
-            gm = mean([r["end"] - r["ask"] - fee(r["ask"]) for r in mir]) if len(mir) >= 20 else float("nan")
+            # Con barras de error: el resultado a RESOLUCIÓN es binario (desviación ~50pp por operación),
+            # así que con unos cientos de disparos su error típico es de varios puntos y no distingue nada.
+            # El markout contra el medio es el estimador de baja varianza, y por eso es el que manda.
+            def stat(xs):
+                if len(xs) < 20: return float("nan"), float("nan")
+                m = mean(xs)
+                v = math.sqrt(sum((x - m) ** 2 for x in xs) / (len(xs) - 1)) / math.sqrt(len(xs))
+                return 100 * m, 100 * v
+            n, en = stat([r["end"] - r["ask"] - fee(r["ask"]) for r in rows])
+            gm, _ = stat([r["end"] - r["ask"] - fee(r["ask"]) for r in mir])
             rr = [r for r in rows if r["won"] is not None]
-            nr = mean([r["won"] - r["ask"] - fee(r["ask"]) for r in rr]) if len(rr) >= 20 else float("nan")
-            dol = nr * med([r["sz"] for r in rr]) if len(rr) >= 20 else float("nan")
+            nr, er = stat([r["won"] - r["ask"] - fee(r["ask"]) for r in rr])
             print(f"  {L:>8.2f}s{len(bywin):>10}{len(rows):>9}{mean([r['ask'] for r in rows]):>7.3f}"
                   f"{med([r['sz'] for r in rows]):>7.0f}{mean([r['end'] for r in rows]):>11.3f}"
-                  f"{100*n:>+10.2f}{100*gm:>+8.2f}{len(rr):>7}{100*nr:>+13.2f}{dol:>+11.2f}")
+                  f"{f'{n:+.2f} ± {en:.2f}':>17}{gm:>+8.2f}{len(rr):>7}"
+                  f"{f'{nr:+.2f} ± {er:.2f}':>20}")
 
-    print("\nLECTURA: la columna 'neto' es lo que quedaría de verdad a cada latencia, ya con la comisión y")
-    print("comprando el ask que REALMENTE existía en ese instante (si el maker canceló, no hay fila). 'tam.' es")
-    print("el tamaño mediano disponible: multiplicado por 'neto' da los dólares por disparo, que es lo que")
-    print("decide si merece la pena montarlo. El 'espejo' tiene que salir claramente negativo; si también gana,")
-    print("estamos midiendo la deriva del libro y no el retraso. Y ojo: esto marca contra el medio asentado,")
-    print("no contra la resolución — mide el mecanismo, no el resultado final de la apuesta.")
+    print()
+    print("LECTURA: el numero que manda es 'neto mid': marca contra el medio ya asentado y su error")
+    print("tipico es de decimas, asi que un +1,7 +- 0,3 es solido.")
+    print("'NETO RESOL.' es el dinero de verdad, pero al ser un resultado binario su desviacion es de")
+    print("~50pp por operacion: con unos cientos de disparos el error tipico son VARIOS PUNTOS y no")
+    print("distingue nada; dos umbrales contiguos pueden salir con signos opuestos solo por ruido.")
+    print("Para que ese numero tenga medio punto de error hacen falta ~10.000 disparos, unos 12 dias.")
+    print("Hasta entonces: el mecanismo esta MEDIDO; su conversion en dinero a resolucion NO, y la")
+    print("forma rapida de saberlo es una orden real, no mas simulacion.")
+    print("El 'espejo' si es informativo con cualquier muestra porque comparte el mismo ruido: si")
+    print("pierde en todas las filas mientras la senal gana, la asimetria es real.")
 
 
 if __name__ == "__main__":
