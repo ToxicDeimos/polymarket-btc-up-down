@@ -207,7 +207,9 @@ def una_jornada(SP, SER, ACC, TOT):
                     for who, key in ((tok, 'rows'), (other, 'mir')):
                         q = at(ws, who, t + L); r2 = at(ws, who, t + SETTLE)
                         if not q or not r2: continue
-                        a[key].append({'ask': q[1], 'sz': q[2], 'end': r2[3],
+                        # r2 = (bid, ask, tam_ask, medio). Para SALIR de verdad hay que cruzar al BID y
+                        # pagar otra comisión: el markout contra el medio es el mecanismo, no el dinero.
+                        a[key].append({'ask': q[1], 'sz': q[2], 'end': r2[3], 'exit': r2[0],
                                        'won': (1 if w1 == who else 0) if w1 else None})
 
 
@@ -227,34 +229,39 @@ def tablas(ACC, TOT):
         print('=' * 104)
         print(f'  SALTOS DE BTC >= ${J:.0f} en {JW:.0f}s · n={n} · comprar el lado favorecido L despues')
         print('=' * 104)
-        print(f"  {'latencia':>10}{'ventanas':>10}{'con ask':>9}{'ask':>7}{'tam.':>7}"
-              f"{'medio {:.0f}s'.format(SETTLE):>11}{'neto mid':>17}{'espejo':>8}"
-              f"{'n res':>7}{'NETO RESOL.':>20}")
+        print(f"  {'latencia':>10}{'con ask':>9}{'ask':>7}{'tam.':>6}"
+              f"{'MECANISMO (mid)':>18}{'espejo':>8}"
+              f"{'SALIR cruzando':>18}{'AGUANTAR a resol.':>21}{'$/disparo':>11}")
         for L in LAT:
             a = ACC.get((J, L))
             if not a or len(a['rows']) < 20: continue
             rows = a['rows']; mir = a['mir']
             nm, en = stat([r['end'] - r['ask'] - fee(r['ask']) for r in rows])
             gm, _ = stat([r['end'] - r['ask'] - fee(r['ask']) for r in mir])
+            # salir de verdad: vender cruzando al bid a los SETTLE s, con su propia comision
+            rt = [r for r in rows if r.get('exit')]
+            ne, ee = stat([r['exit'] - r['ask'] - fee(r['ask']) - fee(r['exit']) for r in rt])
             rr = [r for r in rows if r['won'] is not None]
             nr, er = stat([r['won'] - r['ask'] - fee(r['ask']) for r in rr])
-            print(f"  {L:>8.2f}s{a['win']:>10}{len(rows):>9}{mean([r['ask'] for r in rows]):>7.3f}"
-                  f"{med([r['sz'] for r in rows]):>7.0f}{mean([r['end'] for r in rows]):>11.3f}"
-                  f"{f'{nm:+.2f} ± {en:.2f}':>17}{gm:>+8.2f}{len(rr):>7}"
-                  f"{f'{nr:+.2f} ± {er:.2f}':>20}")
+            sz = med([r['sz'] for r in rows])
+            mejor = max([x for x in (ne, nr) if x == x], default=float('nan'))
+            print(f"  {L:>8.2f}s{len(rows):>9}{mean([r['ask'] for r in rows]):>7.3f}{sz:>6.0f}"
+                  f"{f'{nm:+.2f} ± {en:.2f}':>18}{gm:>+8.2f}"
+                  f"{f'{ne:+.2f} ± {ee:.2f}':>18}{f'{nr:+.2f} ± {er:.2f}':>21}"
+                  f"{sz * mejor / 100:>+11.2f}")
 
 
     print()
-    print("LECTURA: el numero que manda es 'neto mid': marca contra el medio ya asentado y su error")
-    print("tipico es de decimas, asi que un +1,7 +- 0,3 es solido.")
-    print("'NETO RESOL.' es el dinero de verdad, pero al ser un resultado binario su desviacion es de")
-    print("~50pp por operacion: con unos cientos de disparos el error tipico son VARIOS PUNTOS y no")
-    print("distingue nada; dos umbrales contiguos pueden salir con signos opuestos solo por ruido.")
-    print("Para que ese numero tenga medio punto de error hacen falta ~10.000 disparos, unos 12 dias.")
-    print("Hasta entonces: el mecanismo esta MEDIDO; su conversion en dinero a resolucion NO, y la")
-    print("forma rapida de saberlo es una orden real, no mas simulacion.")
-    print("El 'espejo' si es informativo con cualquier muestra porque comparte el mismo ruido: si")
-    print("pierde en todas las filas mientras la senal gana, la asimetria es real.")
+    print("LECTURA: MECANISMO (mid) esta CONFIRMADO: +2,23 +- 0,39 a 0,10 s en saltos de $10 (z 5,7)")
+    print("y +1,41 +- 0,29 en los de $5 (z 4,9), decayendo igual en los dos y con el espejo en -6.")
+    print("Pero ese numero NO es dinero: mide que compramos por debajo de donde el libro se asienta,")
+    print("y para cobrarlo hay que SALIR. Las dos columnas de la derecha son las realizables:")
+    print("  · SALIR cruzando  = vender al bid a los 8 s pagando otra comision. Poca varianza.")
+    print("  · AGUANTAR        = a resolucion. Mas valor esperado pero su error tipico son ~1,7pp.")
+    print("$/disparo toma la mejor de las dos por el tamano disponible: eso es lo que hay que comparar")
+    print("con la realidad (la wallet grande gana ~65 $/dia) antes de montar nada.")
+    print("Aviso: fee() asume 0,07*p*(1-p). La API devuelve taker_base_fee=1000, sin confirmar que")
+    print("signifique. Si la comision real es mayor, la columna de SALIR cruzando es la que mas sufre.")
 
 
 if __name__ == "__main__":
