@@ -30,12 +30,12 @@ DIR = os.path.dirname(__file__)
 # vieja de 15 y write() solo la escribe si el fichero no existe: las columnas nuevas se guardaban pero sin
 # nombre, y DictReader las tiraba — por eso el barrido salía vacío. Los datos viejos NO se tocan: siguen en
 # stalepaper.csv y --analyze lee todos los ficheros, cada uno con su propia cabecera.
-LOG = os.path.join(DIR, "stalepaper_v2.csv")
+LOG = os.path.join(DIR, "stalepaper_v3.csv")
 WSS = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 SPOT_WSS = "wss://stream.binance.com:9443/ws/btcusdt@bookTicker"
 H = ["ts_salto", "ws", "tok", "salto", "react_ms",
      "ask0", "sz0", "ask52", "sz52", "ask100", "sz100", "ask200", "sz200", "mid8s", "spread0",
-     "mv05", "mv1", "mv2", "mv3"]
+     "mv01", "mv02", "mv03", "mv05", "mv1", "mv2", "mv3"]
 # 🔑 Disparábamos en el instante EXACTO en que se cruzaban los $10, así que el salto registrado era ~10
 # siempre (363 de 376 en el cajón 10-15) y el desglose por tamaño no podía decir nada. Peor: explica la
 # diferencia con el offline, que usaba el spot grabado cada 100 ms y por tanto seleccionaba sin querer
@@ -46,9 +46,14 @@ H = ["ts_salto", "ws", "tok", "salto", "react_ms",
 # cruce, así que filtrar por mv≥10 no reproduce un disparador de 10 (acumulación) sino huecos violentos de
 # un solo tick. Y a 5 el edge es ~0/negativo, así que tampoco hay nada que ganar quedándose ahí.
 # Lo único que queda en pie son 432 disparos de UN día a umbral 10 con +1,02 ± 0,45: toca REPLICARLO.
-JUMP = 10.0          # $ en JW
-JW = 1.0
-MVW = (0.5, 1.0, 2.0, 3.0)      # ventanas del movimiento que se anotan
+# El barrido lo dejo claro: solo las ventanas de 0,5 s dan positivo, y cuanto mas larga la ventana
+# peor (-3,94 con 20$ en 3s). Encaja con la curva de repreciado del libro: 72% en 1 s, 98% en 5 s.
+# Un movimiento "de 20$ en 3 s" es NOTICIA VIEJA: el libro ya se puso al dia y estariamos comprando
+# despues de la correccion. Hay que mirar ventanas MAS CORTAS, no mas largas.
+# Se dispara si se cumple CUALQUIERA de estas condiciones (ventana_s, umbral_$):
+TRIG = ((0.2, 3.0), (0.5, 5.0), (1.0, 8.0))
+JW = 1.0            # solo para el campo "salto" del registro
+MVW = (0.1, 0.2, 0.3, 0.5, 1.0, 2.0, 3.0)      # ventanas anotadas; el filtro se elige luego
 COOL = 10.0
 SNAPS = (0.0, 0.052, 0.100, 0.200)     # 52 ms = nuestra latencia medida de envío
 SETTLE = 8.0
@@ -165,8 +170,13 @@ def run_window(ws, mk):
             return (mid - r) if r is not None else None
 
         ref = mv(JW)
-        if ref is None or abs(ref) < JUMP: return
-        tok = "Up" if ref > 0 else "Down"
+        disp = None
+        for w_, thr_ in TRIG:
+            m_ = mv(w_)
+            if m_ is not None and abs(m_) >= thr_: disp = m_; break
+        if disp is None: return
+        if ref is None: ref = disp
+        tok = "Up" if disp > 0 else "Down"
         if bk[tok][1] is None: return
         s = 1 if tok == "Up" else -1
         movs = [(s * m if m is not None else None) for m in (mv(w) for w in MVW)]
@@ -243,8 +253,9 @@ def analizar():
     print("=" * 86)
     print(f"  {'regla':>22}{'n':>7}{'ask':>8}{'MECANISMO':>18}{'z':>7}")
     import statistics as st
-    for w, col in ((0.5, "mv05"), (1.0, "mv1"), (2.0, "mv2"), (3.0, "mv3")):
-        for thr in (5, 8, 10, 15, 20):
+    for w, col in ((0.1, "mv01"), (0.2, "mv02"), (0.3, "mv03"), (0.5, "mv05"),
+                   (1.0, "mv1"), (2.0, "mv2"), (3.0, "mv3")):
+        for thr in (3, 5, 8, 10, 15, 20):
             v = []
             for r in R:
                 try:
