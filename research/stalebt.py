@@ -107,7 +107,12 @@ def main():
     ACC = {}
     TOT = {'sp': 0, 'ev': 0, 'win': 0, 'fire': {}}
     for p in paths:
-        SP = []; EV = {}
+        # Un fichero es un DÍA (17 M de puntos de libro). Guardar los eventos crudos en tuplas de Python
+        # eran varios GB y la Pi mataba el proceso. Aquí se construye YA la serie compacta que usa el
+        # análisis — (ts, bid, ask, tamaño del ask) en arrays — y los eventos crudos no se guardan nunca.
+        SP = []; SER = {}
+        lv = {}; cur = {}                       # estado incremental por (ws, tok)
+        nev = 0
         with open(p, encoding='utf-8') as fh:
             for r in csv.DictReader(fh):
                 try: t = float(r['ts']); typ = r['typ']
@@ -119,71 +124,70 @@ def main():
                     try:
                         ws = int(r['ws']); px = float(r['price']); sz = float(r['size'] or 0)
                     except Exception: continue
+                    tok = r['tok']; k = (ws, tok)
+                    nev += 1
                     sd = (r.get('side') or '').lower()
-                    side = 'bid' if sd.startswith(('b', 'buy')) else 'ask'
+                    if sd.startswith(('b', 'buy')) is False: lv.setdefault(k, {})[px] = sz
+                    c = cur.setdefault(k, [None, None])
                     bb = r.get('bb'); ba = r.get('ba')
-                    try: bb = float(bb) if bb else None
-                    except Exception: bb = None
-                    try: ba = float(ba) if ba else None
-                    except Exception: ba = None
-                    EV.setdefault(ws, []).append((t, r['tok'], side, px, sz, bb, ba))
+                    if bb:
+                        try: c[0] = float(bb)
+                        except Exception: pass
+                    if ba:
+                        try: c[1] = float(ba)
+                        except Exception: pass
+                    b, a = c
+                    if b is None or a is None or not (0 < b < a < 1): continue
+                    s = SER.get(k)
+                    if s is None:
+                        s = SER[k] = (array('d'), array('f'), array('f'), array('f'))
+                    s[0].append(t); s[1].append(b); s[2].append(a)
+                    s[3].append(lv.get(k, {}).get(a, 0.0))
         SP.sort()
-        for ws in EV: EV[ws].sort()
-        nev = sum(len(v) for v in EV.values())
-        TOT['sp'] += len(SP); TOT['win'] += len(EV); TOT['ev'] += nev
-        print(f"  {os.path.basename(p)}: spot {len(SP):,} · ventanas {len(EV)} · eventos {nev:,}", flush=True)
-        if len(SP) < 200 or not EV: continue
-        una_jornada(SP, EV, ACC, TOT)
-        del SP, EV
+        wins = set(k[0] for k in SER)
+        TOT['sp'] += len(SP); TOT['win'] += len(wins); TOT['ev'] += nev
+        print(f"  {os.path.basename(p)}: spot {len(SP):,} · ventanas {len(wins)} · eventos {nev:,}",
+              flush=True)
+        del lv, cur
+        if len(SP) < 200 or not SER: continue
+        una_jornada(SP, SER, ACC, TOT)
+        del SP, SER
     print()
     print(f"TOTAL: spot {TOT['sp']:,} · ventanas {TOT['win']} · eventos {TOT['ev']:,}", flush=True)
     tablas(ACC, TOT)
 
 
-def una_jornada(SP, EV, ACC, TOT):
+def una_jornada(SP, SER, ACC, TOT):
+    """SER[(ws, tok)] = (ts, bid, ask, tamaño del ask) en arrays, ya construido al leer el fichero.
+    El mejor bid/ask NO se reconstruye: viene en cada evento (bb/ba) del propio exchange. Reconstruirlo
+    fallaba porque el filtro de banda de queuewatch deja de actualizar los niveles que se alejan y estos
+    se quedan congelados con tamaño >0, apareciendo bids fantasma por encima del ask."""
     sts = array('d', [t for t, _ in SP]); spx = array('d', [p for _, p in SP])
-    RES = load_reso(sorted(EV.keys()))
+    wins = sorted(set(k[0] for k in SER))
+    RES = load_reso(wins)
+    # rango temporal de cada ventana, para buscar los saltos donde hay libro
+    RANGE = {}
+    for (ws, tok), s in SER.items():
+        if not len(s[0]): continue
+        r = RANGE.setdefault(ws, [s[0][0], s[0][-1]])
+        r[0] = min(r[0], s[0][0]); r[1] = max(r[1], s[0][-1])
 
     def sp_at(t):
         i = bisect.bisect_right(sts, t) - 1
         return spx[i] if (i >= 0 and t - sts[i] <= 2.0) else None
 
-    # ---------- serie (ts, bid, ask, tamaño del ask) por token, UNA sola pasada por ventana ----------
-    # El mejor bid/ask NO se reconstruye: viene en cada evento (bb/ba) del propio exchange. Reconstruirlo
-    # fallaba porque el filtro de banda de queuewatch deja de actualizar los niveles que se alejan y estos
-    # se quedan congelados con tamaño >0, apareciendo bids fantasma por encima del ask.
-    # El libro solo se usa para saber el TAMAÑO que hay en el nivel del mejor ask.
-    SER = {}
-
-    def series(ws):
-        s = SER.get(ws)
-        if s is not None: return s
-        lv = {"Up": {}, "Down": {}}                  # tok -> precio -> tamaño (solo asks)
-        cur = {"Up": [None, None], "Down": [None, None]}
-        out = {"Up": [], "Down": []}
-        for t, tok, side, px, sz, bb, ba in EV[ws]:
-            if side == "ask": lv[tok][px] = sz
-            if bb is not None: cur[tok][0] = bb
-            if ba is not None: cur[tok][1] = ba
-            b, a = cur[tok]
-            if b is None or a is None or not (0 < b < a < 1): continue
-            out[tok].append((t, b, a, lv[tok].get(a, 0.0)))
-        SER[ws] = out
-        return out
-
     def at(ws, tok, t):
-        ser = series(ws)[tok]
-        if not ser: return None
-        i = bisect.bisect_right(ser, (t, 9, 9, 9)) - 1
-        if i < 0 or t - ser[i][0] > 5.0: return None
-        _, b, a, asz = ser[i]
-        return (b, a, asz, (b + a) / 2)
+        s = SER.get((ws, tok))
+        if not s or not len(s[0]): return None
+        i = bisect.bisect_right(s[0], t) - 1
+        if i < 0 or t - s[0][i] > 5.0: return None
+        b = s[1][i]; a = s[2][i]
+        return (b, a, s[3][i], (b + a) / 2)
 
     # ---------- disparos: se ACUMULAN, las tablas se imprimen al final ----------
     for J in JUMPS:
         FIRE = []
-        for ws, ev in EV.items():
-            t0 = ev[0][0]; t1 = ev[-1][0]
+        for ws, (t0, t1) in RANGE.items():
             i = bisect.bisect_left(sts, t0); last = -99
             while i < len(sts) and sts[i] < t1 - SETTLE:
                 t = sts[i]; a = sp_at(t - JW)
