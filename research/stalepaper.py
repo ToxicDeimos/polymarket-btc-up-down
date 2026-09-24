@@ -42,7 +42,11 @@ H = ["ts_salto", "ws", "tok", "salto", "react_ms",
 # saltos MÁS GRANDES (más retraso de libro que capturar) — de ahí su +2,12 frente a nuestro +1,02.
 # Ahora se baja el umbral y se anota el movimiento en VARIAS ventanas, todo conocido en el instante de
 # decidir, para poder evaluar cualquier regla después sin volver a esperar.
-JUMP = 5.0           # $ en JW; umbral bajo a propósito: el filtro se elige luego, no ahora
+# Vuelta a 10. Bajar a 5 para "barrer hacia arriba después" no funciona: mv se mide en el instante del
+# cruce, así que filtrar por mv≥10 no reproduce un disparador de 10 (acumulación) sino huecos violentos de
+# un solo tick. Y a 5 el edge es ~0/negativo, así que tampoco hay nada que ganar quedándose ahí.
+# Lo único que queda en pie son 432 disparos de UN día a umbral 10 con +1,02 ± 0,45: toca REPLICARLO.
+JUMP = 10.0          # $ en JW
 JW = 1.0
 MVW = (0.5, 1.0, 2.0, 3.0)      # ventanas del movimiento que se anotan
 COOL = 10.0
