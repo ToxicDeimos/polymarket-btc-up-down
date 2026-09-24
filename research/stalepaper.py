@@ -30,9 +30,17 @@ LOG = os.path.join(DIR, "stalepaper.csv")
 WSS = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 SPOT_WSS = "wss://stream.binance.com:9443/ws/btcusdt@bookTicker"
 H = ["ts_salto", "ws", "tok", "salto", "react_ms",
-     "ask0", "sz0", "ask52", "sz52", "ask100", "sz100", "ask200", "sz200", "mid8s", "spread0"]
-JUMP = 10.0          # $ en 1 s
+     "ask0", "sz0", "ask52", "sz52", "ask100", "sz100", "ask200", "sz200", "mid8s", "spread0",
+     "mv05", "mv1", "mv2", "mv3"]
+# 🔑 Disparábamos en el instante EXACTO en que se cruzaban los $10, así que el salto registrado era ~10
+# siempre (363 de 376 en el cajón 10-15) y el desglose por tamaño no podía decir nada. Peor: explica la
+# diferencia con el offline, que usaba el spot grabado cada 100 ms y por tanto seleccionaba sin querer
+# saltos MÁS GRANDES (más retraso de libro que capturar) — de ahí su +2,12 frente a nuestro +1,02.
+# Ahora se baja el umbral y se anota el movimiento en VARIAS ventanas, todo conocido en el instante de
+# decidir, para poder evaluar cualquier regla después sin volver a esperar.
+JUMP = 5.0           # $ en JW; umbral bajo a propósito: el filtro se elige luego, no ahora
 JW = 1.0
+MVW = (0.5, 1.0, 2.0, 3.0)      # ventanas del movimiento que se anotan
 COOL = 10.0
 SNAPS = (0.0, 0.052, 0.100, 0.200)     # 52 ms = nuestra latencia medida de envío
 SETTLE = 8.0
@@ -110,7 +118,7 @@ def run_window(ws, mk):
         b, a, s = bk[tok]
         return (a, s, (b + a) / 2 if (b and a) else None, (a - b) if (b and a) else None)
 
-    def disparo(t0, tok, salto, react):
+    def disparo(t0, tok, salto, react, movs):
         """anota el libro a cada latencia y el medio asentado; NO opera."""
         row = [round(t0, 3), ws, tok, round(salto, 1), round(1000 * react, 1)]
         got = {}
@@ -126,6 +134,7 @@ def run_window(ws, mk):
             row.append(round(snap(tok)[2], 4) if snap(tok)[2] else "")
             _, _, _, sp0 = got.get(0.0, (None, None, None, None))
             row.append(round(sp0, 4) if sp0 else "")
+            row.extend(round(m, 1) if m is not None else "" for m in movs)
             write(row)
         threading.Timer(SETTLE, cerrar).start()
 
@@ -135,17 +144,26 @@ def run_window(ws, mk):
             d = json.loads(msg); mid = (float(d["b"]) + float(d["a"])) / 2
         except Exception: return
         hist.append((t, mid))
-        while hist and hist[0][0] < t - 3: hist.pop(0)
+        # margen sobre la ventana más larga: para medir 3 s atrás hace falta guardar MÁS de 3 s
+        while hist and hist[0][0] < t - (max(MVW) + 1.5): hist.pop(0)
         if t - last_fire[0] < COOL: return
-        ref = None
-        for tt, pp in hist:
-            if tt <= t - JW: ref = pp
-            else: break
-        if ref is None or abs(mid - ref) < JUMP: return
-        tok = "Up" if mid > ref else "Down"
+
+        def mv(w):
+            """movimiento acumulado en los últimos w s, con signo. Todo conocido AHORA."""
+            r = None
+            for tt, pp in hist:
+                if tt <= t - w: r = pp
+                else: break
+            return (mid - r) if r is not None else None
+
+        ref = mv(JW)
+        if ref is None or abs(ref) < JUMP: return
+        tok = "Up" if ref > 0 else "Down"
         if bk[tok][1] is None: return
+        s = 1 if tok == "Up" else -1
+        movs = [(s * m if m is not None else None) for m in (mv(w) for w in MVW)]
         last_fire[0] = t; nfire[0] += 1
-        disparo(t, tok, mid - ref, time.time() - t)        # react = lo que tardamos en decidir
+        disparo(t, tok, ref, time.time() - t, movs)        # react = lo que tardamos en decidir
 
     app = websocket.WebSocketApp(WSS, on_open=on_open, on_message=on_book, on_error=lambda a, b: None)
     threading.Thread(target=lambda: app.run_forever(ping_interval=20, ping_timeout=10), daemon=True).start()
@@ -203,29 +221,33 @@ def analizar():
         print(f"  {nm:>16}{len(v):>7}{st.mean([x[0] for x in v]):>8.3f}"
               f"{st.median([x[1] for x in v]):>7.0f}{st.mean([x[2] + x[0] + fee(x[0]) for x in v]):>10.3f}"
               f"{f'{100*st.mean(pl):+.2f} ± {100*sd:.2f}':>18}")
-    # ¿de dónde sale la diferencia con el offline? El offline usaba el spot GRABADO (una fila cada 100 ms),
-    # que suaviza los picos; en vivo vemos cada tick y disparamos también sobre saltos transitorios que
-    # revierten enseguida — y ahí el libro no repreciaba porque no había nada que repreciar.
-    print("\n" + "=" * 78)
-    print("  POR TAMAÑO DEL SALTO (a los 52 ms, nuestra latencia)")
-    print("=" * 78)
-    print(f"  {'salto':>14}{'n':>7}{'ask':>8}{'MECANISMO':>18}")
+    # El desglose por tamano no servia: disparabamos al cruzar el umbral, asi que el salto era ~umbral
+    # siempre (363 de 376 en el cajon 10-15). Ahora se anota el movimiento en varias ventanas y se puede
+    # BARRER cualquier regla sin volver a esperar. Todo lo que se filtra aqui es conocido AL DECIDIR.
+    print()
+    print("=" * 86)
+    print("  BARRIDO DE REGLAS (compra a los 52 ms, nuestra latencia)")
+    print("=" * 86)
+    print(f"  {'regla':>22}{'n':>7}{'ask':>8}{'MECANISMO':>18}{'z':>7}")
     import statistics as st
-    for nm, lo, hi in (("$10-15", 10, 15), ("$15-25", 15, 25), ("$25-40", 25, 40), (">$40", 40, 1e9)):
-        v = []
-        for r in R:
-            try:
-                j = abs(float(r["salto"])); a = float(r["ask52"]); m = float(r["mid8s"])
-            except Exception: continue
-            if not (lo <= j < hi and 0 < a < 1 and 0 < m < 1): continue
-            v.append((a, m - a - fee(a)))
-        if len(v) < 15: print(f"  {nm:>14}{len(v):>7}   (pocos)"); continue
-        pl = [x[1] for x in v]
-        sd = st.pstdev(pl) / (len(pl) ** 0.5) if len(pl) > 1 else float("nan")
-        print(f"  {nm:>14}{len(v):>7}{st.mean([x[0] for x in v]):>8.3f}"
-              f"{f'{100*st.mean(pl):+.2f} ± {100*sd:.2f}':>18}")
-    print("  → si el edge crece con el tamaño del salto, sobra con subir el umbral: los saltos pequeños")
-    print("    son en buena parte ruido que revierte y solo aportan varianza.")
+    for w, col in ((0.5, "mv05"), (1.0, "mv1"), (2.0, "mv2"), (3.0, "mv3")):
+        for thr in (5, 8, 10, 15, 20):
+            v = []
+            for r in R:
+                try:
+                    m = float(r.get(col) or "nan"); a = float(r["ask52"]); s8 = float(r["mid8s"])
+                except Exception: continue
+                if not (m == m and m >= thr and 0 < a < 1 and 0 < s8 < 1): continue
+                v.append((a, s8 - a - fee(a)))
+            if len(v) < 25: continue
+            pl = [x[1] for x in v]
+            sd = st.pstdev(pl) / (len(pl) ** 0.5) if len(pl) > 1 else float("nan")
+            z = st.mean(pl) / sd if sd else float("nan")
+            print(f"  {str(thr) + '$ en ' + str(w) + 's':>22}{len(v):>7}"
+                  f"{st.mean([x[0] for x in v]):>8.3f}"
+                  f"{f'{100*st.mean(pl):+.2f} +- {100*sd:.2f}':>18}{z:>+7.2f}")
+    print("  -> si el edge crece con el umbral y con la ventana, el problema era disparar sobre ruido.")
+    print("     Las reglas con menos de 25 casos no se imprimen: el filtro se elige con muestra.")
 
     print("\nLECTURA: el tiempo de DECISIÓN debería salir en microsegundos (es solo CPU); lo que cuenta es")
     print("la fila de 52 ms, que es nuestra latencia medida de envío de orden. Si el MECANISMO ahí se")
