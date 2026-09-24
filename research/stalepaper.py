@@ -57,19 +57,19 @@ def mvget(r, w):
             except Exception: pass
     return None
 
-# La cabecera se GENERA de MVW. Dos veces se me desincronizaron a mano y el analisis quedo ciego.
-TRIGID = ";".join(f"{w}/{t:g}" for w, t in TRIG)   # queda grabado en cada fila
-
-# El conjunto de momentos que llegamos a VER depende del disparador, asi que una misma regla
-# evaluada sobre disparos de dos disparadores distintos NO es la misma muestra. Se graba cual
-# estaba activo y el barrido no mezcla.
-H = (["ts_salto", "ws", "tok", "salto", "react_ms", "trig"]
-     + [c for k in (0, 52, 100, 200) for c in (f"ask{k}", f"sz{k}")]
-     + ["mid8s", "spread0"] + [mvcol(w) for w in MVW])
-
 # Se dispara si se cumple CUALQUIERA de estas condiciones (ventana_s, umbral_$):
 TRIG = ((0.2, 3.0), (0.5, 5.0), (1.0, 8.0))
 JW = 1.0            # solo para el campo "salto" del registro
+
+# El conjunto de momentos que llegamos a VER depende del disparador, asi que una misma regla evaluada
+# sobre disparos de dos disparadores distintos NO es la misma muestra. Se graba cual estaba activo en
+# cada fila y el barrido no mezcla.
+TRIGID = ";".join(f"{w}/{t:g}" for w, t in TRIG)
+
+# La cabecera se GENERA de MVW. Dos veces se me desincronizaron a mano y el analisis quedo ciego.
+H = (["ts_salto", "ws", "tok", "salto", "react_ms", "trig"]
+     + [c for k in (0, 52, 100, 200) for c in (f"ask{k}", f"sz{k}")]
+     + ["mid8s", "spread0"] + [mvcol(w) for w in MVW])
 COOL = 10.0
 SNAPS = (0.0, 0.052, 0.100, 0.200)     # 52 ms = nuestra latencia medida de envío
 SETTLE = 8.0
