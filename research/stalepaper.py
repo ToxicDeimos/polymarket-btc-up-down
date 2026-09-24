@@ -248,26 +248,31 @@ def analizar():
     rs.sort()
     print(f"tiempo de DECISIÓN (salto → decidido): mediana {rs[len(rs)//2]:.2f} ms · "
           f"p90 {rs[int(.9*len(rs))]:.2f}")
-    print(f"\n  {'compramos a':>16}{'n':>7}{'ask':>8}{'tam.':>7}{'medio 8s':>10}"
-          f"{'MECANISMO':>18}")
-    for k, nm in ((0.0, "al instante"), (0.052, "a los 52 ms"), (0.100, "a los 100 ms"),
-                  (0.200, "a los 200 ms")):
-        key = f"ask{int(k*1000)}" if k else "ask0"
-        skey = f"sz{int(k*1000)}" if k else "sz0"
-        v = []
-        for r in R:
-            try:
-                a = float(r[key]); m = float(r["mid8s"]); s = float(r[skey] or 0)
-            except Exception: continue
-            if not (0 < a < 1 and 0 < m < 1): continue
-            v.append((a, s, m - a - fee(a)))
-        if len(v) < 15: print(f"  {nm:>16}{len(v):>7}   (pocos)"); continue
-        import statistics as st
-        pl = [x[2] for x in v]
-        sd = st.pstdev(pl) / (len(pl) ** 0.5) if len(pl) > 1 else float("nan")
-        print(f"  {nm:>16}{len(v):>7}{st.mean([x[0] for x in v]):>8.3f}"
-              f"{st.median([x[1] for x in v]):>7.0f}{st.mean([x[2] + x[0] + fee(x[0]) for x in v]):>10.3f}"
-              f"{f'{100*st.mean(pl):+.2f} ± {100*sd:.2f}':>18}")
+    # La tabla se parte POR DISPARADOR. Antes era un promedio de todas las épocas, y yo mismo lo usé para
+    # sacar conclusiones sobre la configuración actual cuando el 96% de las filas venían de las anteriores.
+    # Mezclar disparadores invalida la comparación: lo había dicho dos días antes y aun así lo hice.
+    import statistics as st
+    grupos = {}
+    for r in R: grupos.setdefault(r.get("trig") or "antiguos (1s, mezcla)", []).append(r)
+    for g in sorted(grupos, key=lambda k: -len(grupos[k])):
+        print(f"\n  ── disparador {g} ──  ({len(grupos[g])} disparos)")
+        print(f"  {'compramos a':>16}{'n':>7}{'ask':>8}{'tam.':>7}{'medio 8s':>10}{'MECANISMO':>18}")
+        for k, nm in ((0, "al instante"), (52, "a los 52 ms"), (100, "a los 100 ms"),
+                      (200, "a los 200 ms")):
+            v = []
+            for r in grupos[g]:
+                try:
+                    a = float(r[f"ask{k}"]); m = float(r["mid8s"]); s = float(r[f"sz{k}"] or 0)
+                except Exception: continue
+                if not (0 < a < 1 and 0 < m < 1): continue
+                v.append((a, s, m - a - fee(a)))
+            if len(v) < 15: print(f"  {nm:>16}{len(v):>7}   (pocos)"); continue
+            pl = [x[2] for x in v]
+            sd = st.pstdev(pl) / (len(pl) ** 0.5) if len(pl) > 1 else float("nan")
+            print(f"  {nm:>16}{len(v):>7}{st.mean([x[0] for x in v]):>8.3f}"
+                  f"{st.median([x[1] for x in v]):>7.0f}"
+                  f"{st.mean([x[2] + x[0] + fee(x[0]) for x in v]):>10.3f}"
+                  f"{f'{100*st.mean(pl):+.2f} ± {100*sd:.2f}':>18}")
     # El desglose por tamano no servia: disparabamos al cruzar el umbral, asi que el salto era ~umbral
     # siempre (363 de 376 en el cajon 10-15). Ahora se anota el movimiento en varias ventanas y se puede
     # BARRER cualquier regla sin volver a esperar. Todo lo que se filtra aqui es conocido AL DECIDIR.
