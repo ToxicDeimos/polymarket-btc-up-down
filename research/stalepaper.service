@@ -1,0 +1,18 @@
+[Unit]
+Description=stalepaper - reacciona en vivo y anota que habria comprado (NO OPERA)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=alex
+WorkingDirectory=/home/alex/polymarket-btc-up-down/research
+ExecStart=/usr/bin/python3 -u /home/alex/polymarket-btc-up-down/research/stalepaper.py
+Restart=always
+RestartSec=10
+Environment=PYTHONIOENCODING=utf-8
+MemoryMax=300M
+Nice=0
+
+[Install]
+WantedBy=multi-user.target
