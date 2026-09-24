@@ -30,30 +30,27 @@ DIR = os.path.dirname(__file__)
 # vieja de 15 y write() solo la escribe si el fichero no existe: las columnas nuevas se guardaban pero sin
 # nombre, y DictReader las tiraba — por eso el barrido salía vacío. Los datos viejos NO se tocan: siguen en
 # stalepaper.csv y --analyze lee todos los ficheros, cada uno con su propia cabecera.
-LOG = os.path.join(DIR, "stalepaper_v3.csv")
+LOG = os.path.join(DIR, "stalepaper_v4.csv")
 WSS = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 SPOT_WSS = "wss://stream.binance.com:9443/ws/btcusdt@bookTicker"
-H = ["ts_salto", "ws", "tok", "salto", "react_ms",
-     "ask0", "sz0", "ask52", "sz52", "ask100", "sz100", "ask200", "sz200", "mid8s", "spread0",
-     "mv01", "mv02", "mv03", "mv05", "mv1", "mv2", "mv3"]
-# 🔑 Disparábamos en el instante EXACTO en que se cruzaban los $10, así que el salto registrado era ~10
-# siempre (363 de 376 en el cajón 10-15) y el desglose por tamaño no podía decir nada. Peor: explica la
-# diferencia con el offline, que usaba el spot grabado cada 100 ms y por tanto seleccionaba sin querer
-# saltos MÁS GRANDES (más retraso de libro que capturar) — de ahí su +2,12 frente a nuestro +1,02.
-# Ahora se baja el umbral y se anota el movimiento en VARIAS ventanas, todo conocido en el instante de
-# decidir, para poder evaluar cualquier regla después sin volver a esperar.
-# Vuelta a 10. Bajar a 5 para "barrer hacia arriba después" no funciona: mv se mide en el instante del
-# cruce, así que filtrar por mv≥10 no reproduce un disparador de 10 (acumulación) sino huecos violentos de
-# un solo tick. Y a 5 el edge es ~0/negativo, así que tampoco hay nada que ganar quedándose ahí.
-# Lo único que queda en pie son 432 disparos de UN día a umbral 10 con +1,02 ± 0,45: toca REPLICARLO.
-# El barrido lo dejo claro: solo las ventanas de 0,5 s dan positivo, y cuanto mas larga la ventana
-# peor (-3,94 con 20$ en 3s). Encaja con la curva de repreciado del libro: 72% en 1 s, 98% en 5 s.
-# Un movimiento "de 20$ en 3 s" es NOTICIA VIEJA: el libro ya se puso al dia y estariamos comprando
-# despues de la correccion. Hay que mirar ventanas MAS CORTAS, no mas largas.
+
+# No se eligen ventanas: se graba el movimiento en una rejilla FINA y el barrido calcula la que quiera.
+# El coste es una columna por ventana y cero CPU (sale del historial que ya esta en memoria).
+# OJO AL LEER: 12 ventanas x 6 umbrales son 72 casillas y alguna brillara por azar. El criterio NO es
+# "cual gana" sino la FORMA: una pendiente suave significa algo, una casilla suelta entre vecinas planas
+# es ruido. Es el error que mato al candidato del 15m.
+MVW = (0.05, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0)
+
+def mvcol(w): return "mv%d" % round(w * 1000)      # en MILISEGUNDOS: mv50, mv100, ... mv3000
+
+# La cabecera se GENERA de MVW. Dos veces se me desincronizaron a mano y el analisis quedo ciego.
+H = (["ts_salto", "ws", "tok", "salto", "react_ms"]
+     + [c for k in (0, 52, 100, 200) for c in (f"ask{k}", f"sz{k}")]
+     + ["mid8s", "spread0"] + [mvcol(w) for w in MVW])
+
 # Se dispara si se cumple CUALQUIERA de estas condiciones (ventana_s, umbral_$):
 TRIG = ((0.2, 3.0), (0.5, 5.0), (1.0, 8.0))
 JW = 1.0            # solo para el campo "salto" del registro
-MVW = (0.1, 0.2, 0.3, 0.5, 1.0, 2.0, 3.0)      # ventanas anotadas; el filtro se elige luego
 COOL = 10.0
 SNAPS = (0.0, 0.052, 0.100, 0.200)     # 52 ms = nuestra latencia medida de envío
 SETTLE = 8.0
@@ -81,11 +78,19 @@ def discover(ws):
 
 
 def write(row):
+    """Si el fichero existe con OTRA cabecera, se aparta (no se borra) y se empieza uno nuevo.
+    Escribir a ciegas sobre una cabecera vieja ya dejo el analisis ciego dos veces."""
     with LOCK:
-        new = not os.path.exists(LOG)
+        if os.path.exists(LOG):
+            try:
+                with open(LOG, encoding="utf-8") as f: vieja = next(csv.reader(f), [])
+            except Exception: vieja = []
+            if vieja and vieja != H:
+                os.rename(LOG, LOG.replace(".csv", time.strftime("_%Y%m%d%H%M%S.csv")))
+        nuevo = not os.path.exists(LOG)
         with open(LOG, "a", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
-            if new: w.writerow(H)
+            if nuevo: w.writerow(H)
             w.writerow(row)
 
 
@@ -253,8 +258,8 @@ def analizar():
     print("=" * 86)
     print(f"  {'regla':>22}{'n':>7}{'ask':>8}{'MECANISMO':>18}{'z':>7}")
     import statistics as st
-    for w, col in ((0.1, "mv01"), (0.2, "mv02"), (0.3, "mv03"), (0.5, "mv05"),
-                   (1.0, "mv1"), (2.0, "mv2"), (3.0, "mv3")):
+    for w in MVW:
+        col = mvcol(w)
         for thr in (3, 5, 8, 10, 15, 20):
             v = []
             for r in R:
