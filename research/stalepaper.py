@@ -26,7 +26,11 @@ a los 8 s. La resolución se cruza después, offline, como en stalebt.
 import websocket, json, time, threading, csv, os, sys, glob, bisect, urllib.request
 
 DIR = os.path.dirname(__file__)
-LOG = os.path.join(DIR, "stalepaper.csv")
+# El fichero va VERSIONADO. Al añadir las 4 columnas de movimiento, el CSV ya existía con la cabecera
+# vieja de 15 y write() solo la escribe si el fichero no existe: las columnas nuevas se guardaban pero sin
+# nombre, y DictReader las tiraba — por eso el barrido salía vacío. Los datos viejos NO se tocan: siguen en
+# stalepaper.csv y --analyze lee todos los ficheros, cada uno con su propia cabecera.
+LOG = os.path.join(DIR, "stalepaper_v2.csv")
 WSS = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 SPOT_WSS = "wss://stream.binance.com:9443/ws/btcusdt@bookTicker"
 H = ["ts_salto", "ws", "tok", "salto", "react_ms",
@@ -193,8 +197,13 @@ def fee(p): return 0.07 * p * (1 - p)
 
 
 def analizar():
-    if not os.path.exists(LOG): print("aún no hay disparos"); return
-    R = list(csv.DictReader(open(LOG, encoding="utf-8")))
+    # cada fichero con SU cabecera: los antiguos no tienen las columnas de movimiento y no pasa nada
+    R = []
+    for p in sorted(glob.glob(os.path.join(DIR, "stalepaper*.csv"))):
+        n0 = len(R)
+        with open(p, encoding="utf-8") as fh: R.extend(csv.DictReader(fh))
+        print(f"  {os.path.basename(p)}: {len(R) - n0} disparos")
+    if not R: print("aún no hay disparos"); return
     print(f"disparos anotados: {len(R)}")
     if len(R) < 20: print("muestra corta — dejarlo correr"); return
     rs = [float(r["react_ms"]) for r in R if r.get("react_ms")]
