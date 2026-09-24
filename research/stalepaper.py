@@ -43,6 +43,20 @@ MVW = (0.05, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0)
 
 def mvcol(w): return "mv%d" % round(w * 1000)      # en MILISEGUNDOS: mv50, mv100, ... mv3000
 
+# Los ficheros viejos nombran las mismas ventanas de otra forma (mv05 = 0,5 s, mv1 = 1 s...). Al pasar a
+# milisegundos se quedaron fuera del barrido y perdimos 750 disparos ya grabados. El lector acepta ambos.
+ALIAS = {0.1: "mv01", 0.2: "mv02", 0.3: "mv03", 0.5: "mv05", 1.0: "mv1", 2.0: "mv2", 3.0: "mv3"}
+
+def mvget(r, w):
+    """movimiento de la ventana w en esa fila, venga con el nombre nuevo o con el viejo."""
+    for c in (mvcol(w), ALIAS.get(w)):
+        if not c: continue
+        v = r.get(c)
+        if v not in (None, ""):
+            try: return float(v)
+            except Exception: pass
+    return None
+
 # La cabecera se GENERA de MVW. Dos veces se me desincronizaron a mano y el analisis quedo ciego.
 H = (["ts_salto", "ws", "tok", "salto", "react_ms"]
      + [c for k in (0, 52, 100, 200) for c in (f"ask{k}", f"sz{k}")]
@@ -259,14 +273,13 @@ def analizar():
     print(f"  {'regla':>22}{'n':>7}{'ask':>8}{'MECANISMO':>18}{'z':>7}")
     import statistics as st
     for w in MVW:
-        col = mvcol(w)
         for thr in (3, 5, 8, 10, 15, 20):
             v = []
             for r in R:
                 try:
-                    m = float(r.get(col) or "nan"); a = float(r["ask52"]); s8 = float(r["mid8s"])
+                    m = mvget(r, w); a = float(r["ask52"]); s8 = float(r["mid8s"])
                 except Exception: continue
-                if not (m == m and m >= thr and 0 < a < 1 and 0 < s8 < 1): continue
+                if m is None or not (m >= thr and 0 < a < 1 and 0 < s8 < 1): continue
                 v.append((a, s8 - a - fee(a)))
             if len(v) < 25: continue
             pl = [x[1] for x in v]
