@@ -58,7 +58,12 @@ def mvget(r, w):
     return None
 
 # La cabecera se GENERA de MVW. Dos veces se me desincronizaron a mano y el analisis quedo ciego.
-H = (["ts_salto", "ws", "tok", "salto", "react_ms"]
+TRIGID = ";".join(f"{w}/{t:g}" for w, t in TRIG)   # queda grabado en cada fila
+
+# El conjunto de momentos que llegamos a VER depende del disparador, asi que una misma regla
+# evaluada sobre disparos de dos disparadores distintos NO es la misma muestra. Se graba cual
+# estaba activo y el barrido no mezcla.
+H = (["ts_salto", "ws", "tok", "salto", "react_ms", "trig"]
      + [c for k in (0, 52, 100, 200) for c in (f"ask{k}", f"sz{k}")]
      + ["mid8s", "spread0"] + [mvcol(w) for w in MVW])
 
@@ -152,7 +157,7 @@ def run_window(ws, mk):
 
     def disparo(t0, tok, salto, react, movs):
         """anota el libro a cada latencia y el medio asentado; NO opera."""
-        row = [round(t0, 3), ws, tok, round(salto, 1), round(1000 * react, 1)]
+        row = [round(t0, 3), ws, tok, round(salto, 1), round(1000 * react, 1), TRIGID]
         got = {}
         def toma(k):
             got[k] = snap(tok)
@@ -268,7 +273,7 @@ def analizar():
     # BARRER cualquier regla sin volver a esperar. Todo lo que se filtra aqui es conocido AL DECIDIR.
     print()
     print("=" * 86)
-    print("  BARRIDO DE REGLAS (compra a los 52 ms, nuestra latencia)")
+    print(f"  BARRIDO DE REGLAS (compra a los 52 ms) - SOLO disparador {TRIGID}")
     print("=" * 86)
     print(f"  {'regla':>22}{'n':>7}{'ask':>8}{'MECANISMO':>18}{'z':>7}")
     import statistics as st
@@ -276,6 +281,7 @@ def analizar():
         for thr in (3, 5, 8, 10, 15, 20):
             v = []
             for r in R:
+                if r.get("trig") != TRIGID: continue
                 try:
                     m = mvget(r, w); a = float(r["ask52"]); s8 = float(r["mid8s"])
                 except Exception: continue
