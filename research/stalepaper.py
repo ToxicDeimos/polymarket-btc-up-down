@@ -203,6 +203,30 @@ def analizar():
         print(f"  {nm:>16}{len(v):>7}{st.mean([x[0] for x in v]):>8.3f}"
               f"{st.median([x[1] for x in v]):>7.0f}{st.mean([x[2] + x[0] + fee(x[0]) for x in v]):>10.3f}"
               f"{f'{100*st.mean(pl):+.2f} ± {100*sd:.2f}':>18}")
+    # ¿de dónde sale la diferencia con el offline? El offline usaba el spot GRABADO (una fila cada 100 ms),
+    # que suaviza los picos; en vivo vemos cada tick y disparamos también sobre saltos transitorios que
+    # revierten enseguida — y ahí el libro no repreciaba porque no había nada que repreciar.
+    print("\n" + "=" * 78)
+    print("  POR TAMAÑO DEL SALTO (a los 52 ms, nuestra latencia)")
+    print("=" * 78)
+    print(f"  {'salto':>14}{'n':>7}{'ask':>8}{'MECANISMO':>18}")
+    import statistics as st
+    for nm, lo, hi in (("$10-15", 10, 15), ("$15-25", 15, 25), ("$25-40", 25, 40), (">$40", 40, 1e9)):
+        v = []
+        for r in R:
+            try:
+                j = abs(float(r["salto"])); a = float(r["ask52"]); m = float(r["mid8s"])
+            except Exception: continue
+            if not (lo <= j < hi and 0 < a < 1 and 0 < m < 1): continue
+            v.append((a, m - a - fee(a)))
+        if len(v) < 15: print(f"  {nm:>14}{len(v):>7}   (pocos)"); continue
+        pl = [x[1] for x in v]
+        sd = st.pstdev(pl) / (len(pl) ** 0.5) if len(pl) > 1 else float("nan")
+        print(f"  {nm:>14}{len(v):>7}{st.mean([x[0] for x in v]):>8.3f}"
+              f"{f'{100*st.mean(pl):+.2f} ± {100*sd:.2f}':>18}")
+    print("  → si el edge crece con el tamaño del salto, sobra con subir el umbral: los saltos pequeños")
+    print("    son en buena parte ruido que revierte y solo aportan varianza.")
+
     print("\nLECTURA: el tiempo de DECISIÓN debería salir en microsegundos (es solo CPU); lo que cuenta es")
     print("la fila de 52 ms, que es nuestra latencia medida de envío de orden. Si el MECANISMO ahí se")
     print("parece al +2,12 ± 0,39 que dio stalebt offline, la simulación era fiel y lo único que falta es")
