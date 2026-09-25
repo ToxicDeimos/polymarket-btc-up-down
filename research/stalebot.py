@@ -56,7 +56,7 @@ MAX_SPEND_DAY = float(os.environ.get("STALEBOT_MAX_SPEND", "25"))
 MAX_ORDERS_DAY = int(os.environ.get("STALEBOT_MAX_ORDERS", "200"))
 
 H = ["ts", "ws", "tok", "token_id", "ttc", "ask_visto", "tam_visto", "precio_pedido", "size_pedido",
-     "modo", "ms_envio", "estado", "size_llenado", "precio_medio", "order_id", "error"]
+     "modo", "ms_envio", "estado", "size_llenado", "precio_medio", "order_id", "error", "respuesta_cruda"]
 LOCK = threading.Lock()
 LIVE = "--live" in sys.argv and os.environ.get("STALEBOT_LIVE") == "yes"
 DIA = {"fecha": None, "gasto": 0.0, "ordenes": 0}
@@ -160,9 +160,12 @@ def manda_orden(token_id, precio, tick, neg_risk):
         options=PartialCreateOrderOptions(tick_size=tick, neg_risk=neg_risk),
         order_type=OrderType.FAK)
     d = r if isinstance(r, dict) else getattr(r, "__dict__", {"resp": str(r)})
+    # Los nombres de estos campos son una SUPOSICION: nunca hemos visto una respuesta buena. Por eso se
+    # devuelve tambien la respuesta cruda: la primera orden que entre nos ensenara el formato real.
     size = d.get("takingAmount") or d.get("size_matched") or d.get("sizeMatched") or ""
     return (d.get("status") or d.get("success") or "?", size,
-            d.get("price") or "", d.get("orderID") or d.get("order_id") or "", d.get("errorMsg") or "")
+            d.get("price") or "", d.get("orderID") or d.get("order_id") or "",
+            d.get("errorMsg") or "", str(d)[:400])
 
 
 def ventana(ws, mk):
@@ -209,9 +212,9 @@ def ventana(ws, mk):
         base = [round(t, 3), ws, tok, toks[tok], round(ttc, 1), ask, round(tam),
                 ask, SIZE]
         if motivo:
-            apunta(base + ["bloqueado", "", motivo, "", "", "", ""]); return
+            apunta(base + ["bloqueado", "", motivo, "", "", "", "", ""]); return
         if not LIVE:
-            apunta(base + ["simulado", "", "no enviado", "", "", "", ""])
+            apunta(base + ["simulado", "", "no enviado", "", "", "", "", ""])
             print(f"   [simulado] {tok} a {ask} ({tam:.0f} disp.) · quedan {ttc:.0f}s", flush=True)
             return
         # 🔧 PENDIENTE: una orden fallo con "The read operation timed out". Con un edge que dura 116 ms,
@@ -220,15 +223,21 @@ def ventana(ws, mk):
         # saldo suficiente para tener esos ms_envio.
         t0 = time.time()
         try:
-            est, size, px, oid, err = manda_orden(toks[tok], ask, mk["tick"], mk["neg_risk"])
+            est, size, px, oid, err, crudo = manda_orden(toks[tok], ask, mk["tick"], mk["neg_risk"])
         except Exception as e:
-            apunta(base + ["real", round(1000 * (time.time() - t0), 1), "excepcion", "", "", "", str(e)[:180]])
+            apunta(base + ["real", round(1000 * (time.time() - t0), 1), "excepcion", "", "", "", str(e)[:180], ""])
             print(f"   [error] {e}", flush=True); return
         ms = round(1000 * (time.time() - t0), 1)
         DIA["ordenes"] += 1
-        try: DIA["gasto"] += float(size or 0) * float(px or ask)
-        except Exception: DIA["gasto"] += coste
-        apunta(base + ["real", ms, est, size, px, oid, err])
+        # 🔒 Si no sabemos cuanto se lleno (campos mal adivinados -> size vacio -> 0), NO se puede sumar 0:
+        # el tope de gasto dejaria de morder y el bot operaria sin limite. Ante la duda, lo peor posible.
+        try:
+            gastado = float(size) * float(px or ask)
+        except Exception:
+            gastado = coste
+        if not (gastado > 0): gastado = coste
+        DIA["gasto"] += gastado
+        apunta(base + ["real", ms, est, size, px, oid, err, crudo])
         print(f"   [real] {tok} pedido {SIZE}@{ask} → {est} size={size} en {ms:.0f}ms · "
               f"gastado hoy {DIA['gasto']:.2f}$", flush=True)
 
