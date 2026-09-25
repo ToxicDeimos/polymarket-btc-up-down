@@ -214,6 +214,10 @@ def ventana(ws, mk):
             apunta(base + ["simulado", "", "no enviado", "", "", "", ""])
             print(f"   [simulado] {tok} a {ask} ({tam:.0f} disp.) · quedan {ttc:.0f}s", flush=True)
             return
+        # 🔧 PENDIENTE: una orden fallo con "The read operation timed out". Con un edge que dura 116 ms,
+        # una orden que sale 3 s tarde compra al precio YA corregido. Hay que ponerle plazo corto y abortar
+        # si se pasa, pero el plazo se elige viendo cuanto tardan las que SI pasan: falta una sesion con
+        # saldo suficiente para tener esos ms_envio.
         t0 = time.time()
         try:
             est, size, px, oid, err = manda_orden(toks[tok], ask, mk["tick"], mk["neg_risk"])
