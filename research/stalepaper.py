@@ -381,6 +381,40 @@ def analizar():
               f"{f'{100*st.mean(pl):+.2f} +- {100*sd:.2f}':>18}{len(rr):>7}{res:>20}")
     print("  -> un edge real se REPITE. Si un dia da +1,2 y el siguiente -0,3, era una tirada afortunada.")
 
+    # ARTEFACTO DEL CIERRE: si los disparos se concentran al final de la ventana, el resultado ya esta
+    # casi decidido y el libro no llega a corregirse antes de que cierre. Eso produce exactamente este
+    # numero y es el mismo enganno del primer dia con los asks baratos del cierre. Se separa por tiempo
+    # restante: si el edge vive SOLO en los ultimos segundos, es artefacto; si esta repartido, es real.
+    print()
+    print("=" * 84)
+    print("  POR TIEMPO QUE QUEDA DE VENTANA (52 ms)")
+    print("=" * 84)
+    print(f"  {'quedan':>14}{'n':>7}{'ask':>8}{'MECANISMO':>18}{'n res':>7}{'A RESOLUCION':>20}")
+    for nm, lo, hi in (("< 30 s", 0, 30), ("30-60 s", 30, 60), ("60-120 s", 60, 120),
+                       ("120-200 s", 120, 200), ("> 200 s", 200, 1e9)):
+        v = []
+        for r in cur:
+            try:
+                ttc = int(r["ws"]) + 300 - float(r["ts_salto"])
+                a = float(r["ask52"]); m = float(r["mid8s"])
+            except Exception: continue
+            if not (lo <= ttc < hi and 0 < a < 1 and 0 < m < 1): continue
+            w = RES.get(int(r["ws"]))
+            won = None if w is None else (1.0 if w == r.get("tok") else 0.0)
+            v.append((a, m - a - fee(a), won))
+        if len(v) < 20: print(f"  {nm:>14}{len(v):>7}   (pocos)"); continue
+        pl = [x[1] for x in v]
+        sd = st.pstdev(pl) / (len(pl) ** 0.5)
+        rr = [x for x in v if x[2] is not None]
+        if len(rr) >= 20:
+            rp = [x[2] - x[0] - fee(x[0]) for x in rr]
+            res = f"{100*st.mean(rp):+.2f} +- {100*st.pstdev(rp)/(len(rp)**0.5):.2f}"
+        else: res = "-"
+        print(f"  {nm:>14}{len(v):>7}{st.mean([x[0] for x in v]):>8.3f}"
+              f"{f'{100*st.mean(pl):+.2f} +- {100*sd:.2f}':>18}{len(rr):>7}{res:>20}")
+    print("  -> si A RESOLUCION solo brilla en < 30 s, es el artefacto del cierre y no hay edge nuevo.")
+    print("     Si esta repartido por toda la ventana, el libro infrarreacciona de verdad.")
+
     print("\nLECTURA: el tiempo de DECISIÓN debería salir en microsegundos (es solo CPU); lo que cuenta es")
     print("la fila de 52 ms, que es nuestra latencia medida de envío de orden. Si el MECANISMO ahí se")
     print("parece al +2,12 ± 0,39 que dio stalebt offline, la simulación era fiel y lo único que falta es")
