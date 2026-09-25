@@ -234,6 +234,46 @@ def vivo():
 def fee(p): return 0.07 * p * (1 - p)
 
 
+
+
+_RESCACHE = os.path.join(DIR, "lab", "clob_reso_paper.csv")
+
+
+def _resol(wss):
+    """ws -> ganador. Puente ws->cid por los books del laboratorio; lo que falte se pide al CLOB."""
+    ws2cid = {}
+    for path in sorted(glob.glob(os.path.join(DIR, "lab", "books_*.csv"))):
+        with open(path, encoding="utf-8") as fh:
+            rd = csv.reader(fh); next(rd, None)
+            for row in rd:
+                if len(row) < 3 or not row[1].startswith("btc-updown-5m-"): continue
+                try: w = int(row[1].split("-")[-1])
+                except Exception: continue
+                if w in wss and w not in ws2cid: ws2cid[w] = row[2]
+    reso = {}
+    for fn in ("clob_reso_paper.csv", "clob_reso_stale.csv", "clob_reso_mmtoxic.csv"):
+        fp = os.path.join(DIR, "lab", fn)
+        if os.path.exists(fp):
+            for r in csv.DictReader(open(fp, encoding="utf-8")):
+                if r.get("winner"): reso[r["cid"]] = r["winner"]
+    falta = [w for w in wss if w in ws2cid and ws2cid[w] not in reso]
+    print(f"  resoluciones: {len(wss)-len(falta)} listas, {len(falta)} por pedir", flush=True)
+    if falta:
+        nuevo = not os.path.exists(_RESCACHE)
+        with open(_RESCACHE, "a", newline="", encoding="utf-8") as fo:
+            cw = csv.writer(fo)
+            if nuevo: cw.writerow(["cid", "winner"])
+            for w in falta:
+                d = get(f"https://clob.polymarket.com/markets/{ws2cid[w]}", timeout=10)
+                if isinstance(d, dict):
+                    for tk in d.get("tokens", []):
+                        if tk.get("winner") is True:
+                            reso[ws2cid[w]] = tk.get("outcome")
+                            cw.writerow([ws2cid[w], tk.get("outcome")]); fo.flush()
+                time.sleep(0.12)
+    return {w: reso[c] for w, c in ws2cid.items() if c in reso}
+
+
 def analizar():
     # cada fichero con SU cabecera: los antiguos no tienen las columnas de movimiento y no pasa nada
     R = []
@@ -301,6 +341,45 @@ def analizar():
                   f"{f'{100*st.mean(pl):+.2f} +- {100*sd:.2f}':>18}{z:>+7.2f}")
     print("  -> si el edge crece con el umbral y con la ventana, el problema era disparar sobre ruido.")
     print("     Las reglas con menos de 25 casos no se imprimen: el filtro se elige con muestra.")
+
+    # REPLICACION dia a dia (solo disparador actual). Es el gate que mato al candidato anterior: el de
+    # $10 dio +1,02 su primer dia y no se repitio. Un edge real se repite.
+    # Y el resultado a RESOLUCION, que es el dinero: el markout contra el medio es su estimador de baja
+    # varianza (el mercado esta calibrado), pero conviene ver que el dinero real va en el mismo sentido.
+    import time as _t
+    cur = [r for r in R if r.get("trig") == TRIGID]
+    print()
+    print("=" * 84)
+    print(f"  DIA A DIA (52 ms) - solo disparador {TRIGID}")
+    print("=" * 84)
+    RES = _resol({int(r["ws"]) for r in cur if r.get("ws")})
+    print(f"  {'dia':>12}{'n':>7}{'ask':>8}{'MECANISMO':>18}{'n res':>7}{'A RESOLUCION':>20}")
+    byd = {}
+    for r in cur:
+        try:
+            d = _t.strftime("%Y-%m-%d", _t.gmtime(float(r["ts_salto"])))
+            a = float(r["ask52"]); m = float(r["mid8s"])
+        except Exception: continue
+        if not (0 < a < 1 and 0 < m < 1): continue
+        w = RES.get(int(r["ws"])) if r.get("ws") else None
+        won = None if w is None else (1.0 if w == r.get("tok") else 0.0)
+        byd.setdefault(d, []).append((a, m - a - fee(a), won))
+    tot = []
+    for d in sorted(byd) + ["TOTAL"]:
+        v = byd[d] if d != "TOTAL" else tot
+        if d != "TOTAL": tot.extend(v)
+        if len(v) < 20: print(f"  {d:>12}{len(v):>7}   (pocos)"); continue
+        pl = [x[1] for x in v]
+        sd = st.pstdev(pl) / (len(pl) ** 0.5) if len(pl) > 1 else float("nan")
+        rr = [x for x in v if x[2] is not None]
+        if len(rr) >= 20:
+            rp = [x[2] - x[0] - fee(x[0]) for x in rr]
+            rsd = st.pstdev(rp) / (len(rp) ** 0.5)
+            res = f"{100*st.mean(rp):+.2f} +- {100*rsd:.2f}"
+        else: res = "-"
+        print(f"  {d:>12}{len(v):>7}{st.mean([x[0] for x in v]):>8.3f}"
+              f"{f'{100*st.mean(pl):+.2f} +- {100*sd:.2f}':>18}{len(rr):>7}{res:>20}")
+    print("  -> un edge real se REPITE. Si un dia da +1,2 y el siguiente -0,3, era una tirada afortunada.")
 
     print("\nLECTURA: el tiempo de DECISIÓN debería salir en microsegundos (es solo CPU); lo que cuenta es")
     print("la fila de 52 ms, que es nuestra latencia medida de envío de orden. Si el MECANISMO ahí se")
