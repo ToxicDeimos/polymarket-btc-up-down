@@ -112,21 +112,43 @@ def puedo_gastar(coste):
     return None
 
 
+def _api_creds():
+    """Usa las credenciales de API que ya existen en el .env, si estan. Los nombres de los campos de
+    ApiCreds se leen del propio SDK: es codigo de terceros y no quiero adivinarlos."""
+    from py_clob_client_v2 import ApiCreds
+    k = os.environ.get("POLYMARKET_API_KEY")
+    sec = os.environ.get("POLYMARKET_SECRET")
+    pas = os.environ.get("POLYMARKET_PASSPHRASE")
+    if not (k and sec and pas): return None
+    campos = list(getattr(ApiCreds, "__annotations__", {}) or {})
+    vale = {"api_key": k, "key": k, "api_secret": sec, "secret": sec,
+            "api_passphrase": pas, "passphrase": pas}
+    kw = {c: vale[c] for c in campos if c in vale}
+    if len(kw) < 3:
+        raise RuntimeError(f"no se rellenar ApiCreds; sus campos son {campos}")
+    return ApiCreds(**kw)
+
+
 def arranca_cliente():
     """Solo se llama en modo real. La clave sale del entorno y NUNCA se imprime."""
     from py_clob_client_v2 import ClobClient
-    pk = os.environ.get("POLY_PK")
-    if not pk: raise RuntimeError("falta POLY_PK en el entorno (ver .env.example)")
+    pk = os.environ.get("PRIVATE_KEY") or os.environ.get("POLY_PK")
+    if not pk: raise RuntimeError("falta PRIVATE_KEY en el entorno (ver .env.example)")
     kw = {"host": HOST, "chain_id": 137, "key": pk}
     st = os.environ.get("POLY_SIGNATURE_TYPE")
     fu = os.environ.get("POLY_FUNDER")
     if st: kw["signature_type"] = int(st)
     if fu: kw["funder"] = fu
-    c = ClobClient(**kw)
-    creds = c.create_or_derive_api_key()
-    kw["creds"] = creds
-    c = ClobClient(**kw)
-    print("cliente CLOB autenticado (la clave no se muestra)", flush=True)
+    creds = _api_creds()
+    if creds is not None:
+        kw["creds"] = creds
+        c = ClobClient(**kw)
+        print("cliente CLOB con las credenciales del .env (nada de esto se imprime)", flush=True)
+    else:
+        c = ClobClient(**kw)
+        kw["creds"] = c.create_or_derive_api_key()
+        c = ClobClient(**kw)
+        print("cliente CLOB con credenciales derivadas de la clave", flush=True)
     return c
 
 
