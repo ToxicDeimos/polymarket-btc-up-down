@@ -50,8 +50,10 @@ MIN_TTC = 60.0        # con menos de 60 s por delante el mecanismo salía NEGATI
 SIZE = 5              # mínimo del mercado (minimum_order_size)
 MAX_PRICE = 0.95      # no perseguir precios casi resueltos
 MIN_PRICE = 0.05
-MAX_SPEND_DAY = 25.0  # $ · la pérdida máxima del día es, como mucho, lo gastado
-MAX_ORDERS_DAY = 200
+# El tope de GASTO es a la vez el capital necesario y la pérdida máxima: no se puede perder más de lo
+# gastado. Se puede bajar sin tocar el código:  STALEBOT_MAX_SPEND=5 STALEBOT_MAX_ORDERS=2 ...
+MAX_SPEND_DAY = float(os.environ.get("STALEBOT_MAX_SPEND", "25"))
+MAX_ORDERS_DAY = int(os.environ.get("STALEBOT_MAX_ORDERS", "200"))
 
 H = ["ts", "ws", "tok", "token_id", "ttc", "ask_visto", "tam_visto", "precio_pedido", "size_pedido",
      "modo", "ms_envio", "estado", "size_llenado", "precio_medio", "order_id", "error"]
