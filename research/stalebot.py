@@ -76,9 +76,16 @@ def discover(ws):
     if not (isinstance(d, list) and d): return None
     m = d[0]
     try:
-        return {"cid": m.get("conditionId"), "tick": str(m.get("orderPriceMinTickSize") or "0.01"),
-                "toks": dict(zip(json.loads(m["outcomes"]), json.loads(m["clobTokenIds"])))}
-    except Exception: return None
+        cid = m.get("conditionId")
+        toks = dict(zip(json.loads(m["outcomes"]), json.loads(m["clobTokenIds"])))
+    except Exception:
+        return None
+    # tick y neg_risk se leen del CLOB, que es quien casa la orden. Gamma puede dar otro tick y estos
+    # mercados usan 0,001: si mandamos 0,01 con un ask de 0,553, la orden se rechaza o se redondea mal.
+    c = get(f"https://clob.polymarket.com/markets/{cid}") or {}
+    tick = str(c.get("minimum_tick_size") or m.get("orderPriceMinTickSize") or "0.01")
+    return {"cid": cid, "toks": toks, "tick": tick, "neg_risk": bool(c.get("neg_risk", False)),
+            "acepta": c.get("accepting_orders", True)}
 
 
 def apunta(row):
@@ -121,12 +128,12 @@ def arranca_cliente():
     return c
 
 
-def manda_orden(token_id, precio, tick):
+def manda_orden(token_id, precio, tick, neg_risk):
     """Compra FAK (inmediata, admite relleno parcial) al precio visto. Devuelve (estado, size, precio, id, err)."""
     from py_clob_client_v2 import OrderArgs, OrderType, PartialCreateOrderOptions, Side
     r = CLIENT[0].create_and_post_order(
         order_args=OrderArgs(token_id=token_id, price=precio, side=Side.BUY, size=SIZE),
-        options=PartialCreateOrderOptions(tick_size=tick),
+        options=PartialCreateOrderOptions(tick_size=tick, neg_risk=neg_risk),
         order_type=OrderType.FAK)
     d = r if isinstance(r, dict) else getattr(r, "__dict__", {"resp": str(r)})
     size = d.get("takingAmount") or d.get("size_matched") or d.get("sizeMatched") or ""
@@ -185,7 +192,7 @@ def ventana(ws, mk):
             return
         t0 = time.time()
         try:
-            est, size, px, oid, err = manda_orden(toks[tok], ask, mk["tick"])
+            est, size, px, oid, err = manda_orden(toks[tok], ask, mk["tick"], mk["neg_risk"])
         except Exception as e:
             apunta(base + ["real", round(1000 * (time.time() - t0), 1), "excepcion", "", "", "", str(e)[:180]])
             print(f"   [error] {e}", flush=True); return
@@ -253,7 +260,11 @@ def main():
             if t - ws > 230: time.sleep(300 - (t - ws) + 1); continue
             mk = discover(ws)
             if not mk: time.sleep(10); continue
-            print(f"── {ws} (cierra en {int(ws + 300 - time.time())}s)", flush=True)
+            if not mk.get("acepta", True):
+                print(f"── {ws} el mercado NO acepta ordenes, la salto", flush=True)
+                time.sleep(20); continue
+            print(f"── {ws} tick {mk['tick']} · neg_risk {mk['neg_risk']} · "
+                  f"cierra en {int(ws + 300 - time.time())}s", flush=True)
             ventana(ws, mk)
     except KeyboardInterrupt:
         print("\nparando…", flush=True)
