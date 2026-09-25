@@ -69,7 +69,8 @@ TRIGID = ";".join(f"{w}/{t:g}" for w, t in TRIG)
 # La cabecera se GENERA de MVW. Dos veces se me desincronizaron a mano y el analisis quedo ciego.
 H = (["ts_salto", "ws", "tok", "salto", "react_ms", "trig"]
      + [c for k in (0, 52, 100, 200) for c in (f"ask{k}", f"sz{k}")]
-     + ["mid8s", "spread0"] + [mvcol(w) for w in MVW])
+     + ["mid8s", "spread0", "oask52", "osz52", "omid8s"]   # o* = token CONTRARIO (espejo)
+     + [mvcol(w) for w in MVW])
 COOL = 10.0
 SNAPS = (0.0, 0.052, 0.100, 0.200)     # 52 ms = nuestra latencia medida de envío
 SETTLE = 8.0
@@ -159,8 +160,10 @@ def run_window(ws, mk):
         """anota el libro a cada latencia y el medio asentado; NO opera."""
         row = [round(t0, 3), ws, tok, round(salto, 1), round(1000 * react, 1), TRIGID]
         got = {}
+        ogot = {}
         def toma(k):
             got[k] = snap(tok)
+            if abs(k - 0.052) < 1e-9: ogot[k] = snap("Down" if tok == "Up" else "Up")
         for k in SNAPS:
             if k <= 0: toma(k)
             else: threading.Timer(k, toma, args=(k,)).start()
@@ -171,6 +174,12 @@ def run_window(ws, mk):
             row.append(round(snap(tok)[2], 4) if snap(tok)[2] else "")
             _, _, _, sp0 = got.get(0.0, (None, None, None, None))
             row.append(round(sp0, 4) if sp0 else "")
+            # espejo: mismo instante, token contrario. Si el espejo TAMBIEN gana a resolucion, el cruce
+            # ganador<->lado comprado esta roto y el numero entero es basura.
+            o = "Down" if tok == "Up" else "Up"
+            oa, osz = ogot.get(0.052, (None, None, None, None))[:2]
+            row.extend([oa if oa else "", round(osz) if osz else "",
+                        round(snap(o)[2], 4) if snap(o)[2] else ""])
             row.extend(round(m, 1) if m is not None else "" for m in movs)
             write(row)
         threading.Timer(SETTLE, cerrar).start()
@@ -414,6 +423,31 @@ def analizar():
               f"{f'{100*st.mean(pl):+.2f} +- {100*sd:.2f}':>18}{len(rr):>7}{res:>20}")
     print("  -> si A RESOLUCION solo brilla en < 30 s, es el artefacto del cierre y no hay edge nuevo.")
     print("     Si esta repartido por toda la ventana, el libro infrarreacciona de verdad.")
+
+    # CONTROL ESPEJO: mismo instante, token CONTRARIO. Si el espejo tambien gana a resolucion, el cruce
+    # ganador<->lado comprado esta roto y todo lo anterior es basura. Si pierde, la senal es real.
+    esp = []; sig = []
+    for r in cur:
+        try:
+            oa = float(r.get("oask52") or "nan"); a = float(r["ask52"])
+        except Exception: continue
+        if not (0 < oa < 1 and 0 < a < 1): continue
+        w = RES.get(int(r["ws"]))
+        if w is None: continue
+        o = "Down" if r.get("tok") == "Up" else "Up"
+        sig.append((1.0 if w == r.get("tok") else 0.0) - a - fee(a))
+        esp.append((1.0 if w == o else 0.0) - oa - fee(oa))
+    print()
+    print("=" * 84)
+    print("  CONTROL ESPEJO a resolucion (mismo instante, token contrario)")
+    print("=" * 84)
+    if len(esp) >= 30:
+        for nm, v in (("senal", sig), ("espejo", esp)):
+            sd = st.pstdev(v) / (len(v) ** 0.5)
+            print(f"  {nm:>10}{len(v):>8}{100*st.mean(v):>+10.2f} +- {100*sd:.2f}")
+        print("  -> si el espejo tambien sale POSITIVO, el cruce ganador<->lado esta roto.")
+    else:
+        print("  aun sin datos: las columnas o* empiezan a grabarse ahora")
 
     print("\nLECTURA: el tiempo de DECISIÓN debería salir en microsegundos (es solo CPU); lo que cuenta es")
     print("la fila de 52 ms, que es nuestra latencia medida de envío de orden. Si el MECANISMO ahí se")
