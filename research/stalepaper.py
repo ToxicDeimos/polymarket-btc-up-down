@@ -390,6 +390,40 @@ def analizar():
               f"{f'{100*st.mean(pl):+.2f} +- {100*sd:.2f}':>18}{len(rr):>7}{res:>20}")
     print("  -> un edge real se REPITE. Si un dia da +1,2 y el siguiente -0,3, era una tirada afortunada.")
 
+    # 🔑 UNA VENTANA = UNA OBSERVACION. stalepaper dispara VARIAS veces por ventana (solo tiene
+    # enfriamiento de 10 s, no limite por ventana como stalebot), y todos esos disparos COMPARTEN el
+    # mismo resultado porque la ventana resuelve una sola vez. Agruparlos infla la significancia de la
+    # columna a resolucion: es el error que costo el candidato del 15m. Aqui se recalcula quedandose con
+    # el PRIMER disparo de cada ventana, que es ademas lo que haria stalebot.
+    print()
+    print("=" * 84)
+    print("  UNA POR VENTANA (independientes) - y es lo que haria el bot real")
+    print("=" * 84)
+    prim = {}
+    for r in cur:
+        try:
+            w = int(r["ws"]); t = float(r["ts_salto"])
+            a = float(r["ask52"]); m = float(r["mid8s"])
+        except Exception: continue
+        if not (0 < a < 1 and 0 < m < 1): continue
+        if w not in prim or t < prim[w][0]: prim[w] = (t, a, m, r.get("tok"))
+    vm = []; vr = []
+    for w, (t, a, m, tok) in prim.items():
+        vm.append(m - a - fee(a))
+        win = RES.get(w)
+        if win is not None: vr.append((1.0 if win == tok else 0.0) - a - fee(a))
+    nd = len(cur)
+    print(f"  disparos totales {nd} · ventanas distintas {len(prim)} · "
+          f"{nd/max(1,len(prim)):.1f} disparos por ventana")
+    if len(vm) >= 20:
+        sd = st.pstdev(vm) / (len(vm) ** 0.5)
+        print(f"  {'MECANISMO':>16}{len(vm):>8}{100*st.mean(vm):>+10.2f} +- {100*sd:.2f}")
+    if len(vr) >= 20:
+        sd = st.pstdev(vr) / (len(vr) ** 0.5)
+        print(f"  {'A RESOLUCION':>16}{len(vr):>8}{100*st.mean(vr):>+10.2f} +- {100*sd:.2f}")
+    print("  -> ESTOS son los errores honestos. Los de las tablas de arriba estan subestimados porque",
+          "cuentan la misma ventana varias veces.")
+
     # ARTEFACTO DEL CIERRE: si los disparos se concentran al final de la ventana, el resultado ya esta
     # casi decidido y el libro no llega a corregirse antes de que cierre. Eso produce exactamente este
     # numero y es el mismo enganno del primer dia con los asks baratos del cierre. Se separa por tiempo
