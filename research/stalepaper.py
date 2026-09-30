@@ -31,6 +31,10 @@ DIR = os.path.dirname(__file__)
 # nombre, y DictReader las tiraba — por eso el barrido salía vacío. Los datos viejos NO se tocan: siguen en
 # stalepaper.csv y --analyze lee todos los ficheros, cada uno con su propia cabecera.
 LOG = os.path.join(DIR, "stalepaper_v4.csv")
+# Medio del libro a plazos LARGOS, para ver si a los 8 s ha terminado de recotizar o sigue.
+TARDE = (15.0, 30.0, 60.0, 120.0)
+LOG_TARDE = os.path.join(DIR, "stalepaper_tarde.csv")
+H_TARDE = ["ts_salto", "ws", "tok", "trig"] + [f"mid{int(h)}s" for h in TARDE]
 WSS = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 SPOT_WSS = "wss://stream.binance.com:9443/ws/btcusdt@bookTicker"
 
@@ -114,6 +118,15 @@ def write(row):
             w.writerow(row)
 
 
+def escribe_tarde(row):
+    with LOCK:
+        nuevo = not os.path.exists(LOG_TARDE)
+        with open(LOG_TARDE, "a", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            if nuevo: w.writerow(H_TARDE)
+            w.writerow(row)
+
+
 def run_window(ws, mk):
     toks = mk["toks"]; id2 = {toks["Up"]: "Up", toks["Down"]: "Down"}
     close = ws + 300
@@ -183,6 +196,21 @@ def run_window(ws, mk):
             row.extend(round(m, 1) if m is not None else "" for m in movs)
             write(row)
         threading.Timer(SETTLE, cerrar).start()
+
+        # ---- plazos LARGOS, a un fichero aparte ----
+        # El mecanismo (markout contra el medio a 8 s) da +3,29 y aguantar a resolucion da +8,61. Segun
+        # nuestra propia logica esas dos cifras miden LO MISMO, y estan a 7,6 errores tipicos. La hipotesis
+        # es que a los 8 s el libro TODAVIA no ha terminado de recotizar: si el medio sigue subiendo a 15,
+        # 30 y 60 s, mid8s no es el pronostico asentado y el markout se queda corto.
+        # Va a otro fichero para no tocar el que lleva 19.000 filas acumuladas: se junta luego por ts_salto.
+        tarde, plazos = {}, [h for h in TARDE if t0 + h < close - 13]
+        if plazos:
+            def tardio(h):
+                tarde[h] = snap(tok)[2]
+                if h == plazos[-1]:
+                    escribe_tarde([round(t0, 3), ws, tok, TRIGID]
+                                  + [round(tarde[x], 4) if tarde.get(x) else "" for x in TARDE])
+            for h in plazos: threading.Timer(h, tardio, args=(h,)).start()
 
     def on_spot(w, msg):
         t = time.time()
