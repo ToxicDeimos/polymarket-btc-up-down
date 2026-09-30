@@ -262,6 +262,10 @@ def ventana(ws, mk):
         try:
             est, size, px, oid, err, crudo = manda_orden(toks[tok], ask, mk["tick"], mk["neg_risk"])
         except Exception as e:
+            # 🔒 Un plazo agotado se agota en NUESTRO lado: la orden puede haber entrado igual y no hay
+            # forma de saberlo desde aqui. Se cuenta como gastada. Si no, un tramo de red mala dejaria
+            # el tope sin morder y el bot seguiria mandando ordenes que quiza si estan comprando.
+            DIA["ordenes"] += 1; DIA["gasto"] += coste
             apunta(base + ["real", round(1000 * (time.time() - t0), 1), "excepcion", "", "", "", str(e)[:180], ""])
             print(f"   [error] {e}", flush=True); return
         ms = round(1000 * (time.time() - t0), 1)
