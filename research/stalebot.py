@@ -47,11 +47,15 @@ COOL = 10.0
 MIN_TTC = 60.0        # con menos de 60 s por delante el mecanismo salía NEGATIVO en el papel
 
 # 🔑 FILTRO DE ACTIVIDAD. Mi hipotesis era que los ratos movidos darian mas margen; el papel dice lo
-# CONTRARIO, y de forma monotona en cuatro cajones (regimen.py, 136 horas):
-#     tranquila <=64/h  mecanismo +4,96  resolucion  +9,95
-#     media-baja        +2,63             +7,45
-#     media-alta        +0,58             +4,94
-#     agitada  >151/h   -0,27             +2,70
+# CONTRARIO, y de forma monotona en cuatro cajones (regimen.py D, 16.461 disparos, actividad CAUSAL:
+# disparos en los 60 min ANTERIORES, que es lo unico que se sabe en vivo):
+#     tranquila <=102/h  mecanismo +3,46 ± 0,17  resolucion  +7,89 ± 0,62
+#     media-baja                   +0,75 ± 0,12              +5,84 ± 0,65
+#     media-alta                   +0,17 ± 0,11              +3,41 ± 0,65
+#     agitada   >193/h             -0,23 ± 0,10              +1,80 ± 0,73
+# El apartado B, por hora de RELOJ, daba el umbral en 64 y era dos veces mal: etiquetaba cada disparo con
+# la hora entera INCLUIDO SU FUTURO, y una hora en la que el grabador solo estuvo 20 min cuenta pocos
+# disparos y se colaba en "tranquila" sin serlo. El numero bueno es el Q1 causal.
 # Cuando hay mucho movimiento los creadores de mercado estan atentos y repreciando; cuando esta tranquilo
 # se despistan y dejan cotizaciones viejas. Se cuentan las deteccciones de los ultimos 60 min (ventana
 # movil, no hora de reloj) y solo se opera por debajo del umbral. Con el tope de gasto limitando a ~9
@@ -59,7 +63,7 @@ MIN_TTC = 60.0        # con menos de 60 s por delante el mecanismo salía NEGATI
 # ⚠ Al arrancar la lista esta VACIA: durante la primera hora contar a secas da siempre "tranquilo" y el
 # filtro no muerde justo despues de un reinicio. Se cuenta como TASA: detecciones por hora extrapoladas al
 # rato observado. Y hasta llevar WARM encendido no se opera, porque con 2 minutos la tasa es ruido puro.
-MAX_ACT = int((os.environ.get("STALEBOT_MAX_ACT") or "64").strip())
+MAX_ACT = int((os.environ.get("STALEBOT_MAX_ACT") or "102").strip())
 DETS = []             # marcas de tiempo de las detecciones, para la ventana movil de 60 min
 WARM = 300.0          # 5 min de calentamiento antes de la primera orden
 T0 = time.time()
@@ -337,7 +341,7 @@ def main():
     print(f"  tamaño {SIZE} acciones · tope {MAX_SPEND_DAY:.0f}$/día · {MAX_ORDERS_DAY} órdenes/día")
     print(f"  una orden por ventana · solo con >{MIN_TTC:.0f}s por delante · precio {MIN_PRICE}-{MAX_PRICE}")
     print(f"  solo en ratos TRANQUILOS: <={MAX_ACT} detecciones/hora "
-          f"(el papel: tranquilo +9,95 a resolucion · agitado +2,70)")
+          f"(el papel: tranquilo +7,89 a resolucion · agitado +1,80)")
     print(f"  los primeros {WARM/60:.0f} min no se opera: hace falta rato para saber si esta tranquilo")
     print(f"  para parar en caliente:  touch {STOP}")
     print("=" * 74, flush=True)
