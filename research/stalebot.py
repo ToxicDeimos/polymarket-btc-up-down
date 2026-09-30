@@ -46,6 +46,19 @@ TRIG = ((0.2, 3.0), (0.5, 5.0), (1.0, 8.0))
 COOL = 10.0
 MIN_TTC = 60.0        # con menos de 60 s por delante el mecanismo salía NEGATIVO en el papel
 
+# 🔑 FILTRO DE ACTIVIDAD. Mi hipotesis era que los ratos movidos darian mas margen; el papel dice lo
+# CONTRARIO, y de forma monotona en cuatro cajones (regimen.py, 136 horas):
+#     tranquila <=64/h  mecanismo +4,96  resolucion  +9,95
+#     media-baja        +2,63             +7,45
+#     media-alta        +0,58             +4,94
+#     agitada  >151/h   -0,27             +2,70
+# Cuando hay mucho movimiento los creadores de mercado estan atentos y repreciando; cuando esta tranquilo
+# se despistan y dejan cotizaciones viejas. Se cuentan las deteccciones de los ultimos 60 min (ventana
+# movil, no hora de reloj) y solo se opera por debajo del umbral. Con el tope de gasto limitando a ~9
+# ordenes/dia, las ordenes son el recurso escaso: mejor pocas y buenas.
+MAX_ACT = int((os.environ.get("STALEBOT_MAX_ACT") or "64").strip())
+DETS = []             # marcas de tiempo de las detecciones, para la ventana movil de 60 min
+
 # ---- límites duros ----
 SIZE = 5              # mínimo del mercado (minimum_order_size)
 MAX_PRICE = 0.95      # no perseguir precios casi resueltos
@@ -56,7 +69,8 @@ MAX_SPEND_DAY = float(os.environ.get("STALEBOT_MAX_SPEND", "25"))
 MAX_ORDERS_DAY = int(os.environ.get("STALEBOT_MAX_ORDERS", "200"))
 
 H = ["ts", "ws", "tok", "token_id", "ttc", "ask_visto", "tam_visto", "precio_pedido", "size_pedido",
-     "modo", "ms_envio", "estado", "size_llenado", "precio_medio", "order_id", "error", "respuesta_cruda"]
+     "actividad", "modo", "ms_envio", "estado", "size_llenado", "precio_medio", "order_id", "error",
+     "respuesta_cruda"]
 LOCK = threading.Lock()
 LIVE = "--live" in sys.argv and os.environ.get("STALEBOT_LIVE") == "yes"
 DIA = {"fecha": None, "gasto": 0.0, "ordenes": 0}
@@ -92,6 +106,14 @@ def discover(ws):
 
 def apunta(row):
     with LOCK:
+        # Si el fichero existe con OTRA cabecera se aparta (no se borra) y se empieza uno nuevo: escribir
+        # a ciegas sobre una cabecera vieja deja columnas sin nombre y el analisis las descarta en silencio.
+        if os.path.exists(LOG):
+            try:
+                with open(LOG, encoding="utf-8") as f: vieja = next(csv.reader(f), [])
+            except Exception: vieja = []
+            if vieja and vieja != H:
+                os.rename(LOG, LOG.replace(".csv", time.strftime("_%Y%m%d%H%M%S.csv")))
         nuevo = not os.path.exists(LOG)
         with open(LOG, "a", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
@@ -210,7 +232,7 @@ def ventana(ws, mk):
         coste = ask * SIZE
         motivo = puedo_gastar(coste)
         base = [round(t, 3), ws, tok, toks[tok], round(ttc, 1), ask, round(tam),
-                ask, SIZE]
+                ask, SIZE, len(DETS)]
         if motivo:
             apunta(base + ["bloqueado", "", motivo, "", "", "", "", ""]); return
         if not LIVE:
@@ -243,13 +265,14 @@ def ventana(ws, mk):
 
     def on_spot(w, msg):
         t = time.time()
-        if hecho[0] or t - ultimo[0] < COOL: return
+        # El enfriamiento va sobre la ULTIMA DETECCION, no sobre la ultima orden: hay que seguir contando
+        # aunque ya hayamos operado en esta ventana, porque la actividad se mide igual que en el papel.
+        if t - ultimo[0] < COOL: return
         try:
             d = json.loads(msg); mid = (float(d["b"]) + float(d["a"])) / 2
         except Exception: return
         hist.append((t, mid))
         while hist and hist[0][0] < t - 4.5: hist.pop(0)
-        if close - t < MIN_TTC: return
 
         def mv(wn):
             r = None
@@ -263,10 +286,21 @@ def ventana(ws, mk):
             m = mv(wn)
             if m is not None and abs(m) >= thr: disp = m; break
         if disp is None: return
+
+        # DETECCION: se cuenta SIEMPRE, aunque no vayamos a operar. Ventana movil de 60 min.
+        ultimo[0] = t
+        DETS.append(t)
+        while DETS and DETS[0] < t - 3600: DETS.pop(0)
+
+        if hecho[0]: return                      # UNA orden por ventana
+        if close - t < MIN_TTC: return
         tok = "Up" if disp > 0 else "Down"
         ask = bk[tok][1]
         if ask is None or not (MIN_PRICE <= ask <= MAX_PRICE): return
-        ultimo[0] = t; hecho[0] = True          # UNA orden por ventana
+        if len(DETS) > MAX_ACT:                  # rato agitado: el papel dice que ahi no hay margen
+            print(f"   [saltado] {tok} a {ask} · {len(DETS)} detecciones/hora > {MAX_ACT}", flush=True)
+            return
+        hecho[0] = True
         dispara(t, tok)
 
     app = websocket.WebSocketApp(WSS, on_open=on_open, on_message=on_book, on_error=lambda a, b: None)
@@ -283,6 +317,8 @@ def main():
     print(f"  stalebot · modo {modo}")
     print(f"  tamaño {SIZE} acciones · tope {MAX_SPEND_DAY:.0f}$/día · {MAX_ORDERS_DAY} órdenes/día")
     print(f"  una orden por ventana · solo con >{MIN_TTC:.0f}s por delante · precio {MIN_PRICE}-{MAX_PRICE}")
+    print(f"  solo en ratos TRANQUILOS: <={MAX_ACT} detecciones en los ultimos 60 min "
+          f"(el papel: tranquilo +9,95 a resolucion · agitado +2,70)")
     print(f"  para parar en caliente:  touch {STOP}")
     print("=" * 74, flush=True)
     if LIVE:
