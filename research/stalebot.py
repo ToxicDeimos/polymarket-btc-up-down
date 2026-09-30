@@ -56,8 +56,18 @@ MIN_TTC = 60.0        # con menos de 60 s por delante el mecanismo salía NEGATI
 # se despistan y dejan cotizaciones viejas. Se cuentan las deteccciones de los ultimos 60 min (ventana
 # movil, no hora de reloj) y solo se opera por debajo del umbral. Con el tope de gasto limitando a ~9
 # ordenes/dia, las ordenes son el recurso escaso: mejor pocas y buenas.
+# ⚠ Al arrancar la lista esta VACIA: durante la primera hora contar a secas da siempre "tranquilo" y el
+# filtro no muerde justo despues de un reinicio. Se cuenta como TASA: detecciones por hora extrapoladas al
+# rato observado. Y hasta llevar WARM encendido no se opera, porque con 2 minutos la tasa es ruido puro.
 MAX_ACT = int((os.environ.get("STALEBOT_MAX_ACT") or "64").strip())
 DETS = []             # marcas de tiempo de las detecciones, para la ventana movil de 60 min
+WARM = 300.0          # 5 min de calentamiento antes de la primera orden
+T0 = time.time()
+
+
+def tasa(t):
+    """Detecciones por hora. Antes de llevar una hora encendido se extrapola el rato observado."""
+    return len(DETS) * 3600.0 / min(max(t - T0, 1.0), 3600.0)
 
 # ---- límites duros ----
 SIZE = 5              # mínimo del mercado (minimum_order_size)
@@ -232,12 +242,13 @@ def ventana(ws, mk):
         coste = ask * SIZE
         motivo = puedo_gastar(coste)
         base = [round(t, 3), ws, tok, toks[tok], round(ttc, 1), ask, round(tam),
-                ask, SIZE, len(DETS)]
+                ask, SIZE, round(tasa(t))]
         if motivo:
             apunta(base + ["bloqueado", "", motivo, "", "", "", "", ""]); return
         if not LIVE:
             apunta(base + ["simulado", "", "no enviado", "", "", "", "", ""])
-            print(f"   [simulado] {tok} a {ask} ({tam:.0f} disp.) · quedan {ttc:.0f}s", flush=True)
+            print(f"   [simulado] {tok} a {ask} · {tam:.0f} acciones en el ask · "
+                  f"{tasa(t):.0f} det/h · quedan {ttc:.0f}s", flush=True)
             return
         # 🔧 PENDIENTE: una orden fallo con "The read operation timed out". Con un edge que dura 116 ms,
         # una orden que sale 3 s tarde compra al precio YA corregido. Hay que ponerle plazo corto y abortar
@@ -297,8 +308,12 @@ def ventana(ws, mk):
         tok = "Up" if disp > 0 else "Down"
         ask = bk[tok][1]
         if ask is None or not (MIN_PRICE <= ask <= MAX_PRICE): return
-        if len(DETS) > MAX_ACT:                  # rato agitado: el papel dice que ahi no hay margen
-            print(f"   [saltado] {tok} a {ask} · {len(DETS)} detecciones/hora > {MAX_ACT}", flush=True)
+        if t - T0 < WARM:                        # aun no se sabe si el rato es tranquilo o agitado
+            print(f"   [espera] {tok} a {ask} · calentando, quedan {WARM - (t - T0):.0f}s", flush=True)
+            return
+        act = tasa(t)
+        if act > MAX_ACT:                        # rato agitado: el papel dice que ahi no hay margen
+            print(f"   [saltado] {tok} a {ask} · {act:.0f} detecciones/hora > {MAX_ACT}", flush=True)
             return
         hecho[0] = True
         dispara(t, tok)
@@ -317,8 +332,9 @@ def main():
     print(f"  stalebot · modo {modo}")
     print(f"  tamaño {SIZE} acciones · tope {MAX_SPEND_DAY:.0f}$/día · {MAX_ORDERS_DAY} órdenes/día")
     print(f"  una orden por ventana · solo con >{MIN_TTC:.0f}s por delante · precio {MIN_PRICE}-{MAX_PRICE}")
-    print(f"  solo en ratos TRANQUILOS: <={MAX_ACT} detecciones en los ultimos 60 min "
+    print(f"  solo en ratos TRANQUILOS: <={MAX_ACT} detecciones/hora "
           f"(el papel: tranquilo +9,95 a resolucion · agitado +2,70)")
+    print(f"  los primeros {WARM/60:.0f} min no se opera: hace falta rato para saber si esta tranquilo")
     print(f"  para parar en caliente:  touch {STOP}")
     print("=" * 74, flush=True)
     if LIVE:
