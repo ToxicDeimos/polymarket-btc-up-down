@@ -205,7 +205,7 @@ def ventana(ws, mk):
     close = ws + 300
     bk = {"Up": [None, None, 0.0], "Down": [None, None, 0.0]}
     lv = {"Up": {}, "Down": {}}
-    hist = []; ultimo = [0.0]; hecho = [False]
+    hist = []; ultimo = [0.0]; hecho = [False]; dicho = [False]   # dicho: ya avisamos en esta ventana
 
     def on_open(w): w.send(json.dumps({"type": "market", "assets_ids": [toks["Up"], toks["Down"]]}))
 
@@ -309,11 +309,15 @@ def ventana(ws, mk):
         ask = bk[tok][1]
         if ask is None or not (MIN_PRICE <= ask <= MAX_PRICE): return
         if t - T0 < WARM:                        # aun no se sabe si el rato es tranquilo o agitado
-            print(f"   [espera] {tok} a {ask} · calentando, quedan {WARM - (t - T0):.0f}s", flush=True)
+            if not dicho[0]:
+                dicho[0] = True
+                print(f"   [espera] calentando, quedan {WARM - (t - T0):.0f}s", flush=True)
             return
         act = tasa(t)
         if act > MAX_ACT:                        # rato agitado: el papel dice que ahi no hay margen
-            print(f"   [saltado] {tok} a {ask} · {act:.0f} detecciones/hora > {MAX_ACT}", flush=True)
+            if not dicho[0]:                     # una linea por ventana, no una por deteccion
+                dicho[0] = True
+                print(f"   [saltado] rato agitado · {act:.0f} detecciones/hora > {MAX_ACT}", flush=True)
             return
         hecho[0] = True
         dispara(t, tok)

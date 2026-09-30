@@ -111,6 +111,38 @@ def main():
         rr = [x["res"] for x in v if x["res"] is not None]
         print(f"  {f'>{u} disparos/hora':>22}{100*len(v)/len(filas):>15.0f}%"
               f"{fmt(stat([x['mec'] for x in v])):>18}{fmt(stat(rr)):>20}")
+    # ---------- D) la misma actividad pero CAUSAL ----------
+    # B y C agrupan por hora de RELOJ: un disparo de las 14:05 lleva la etiqueta de las 14:00-15:00
+    # enteras, incluido lo que todavia no ha pasado. En vivo eso no se sabe. Aqui se cuenta solo lo
+    # ANTERIOR: disparos en los 3600 s previos, que es exactamente lo que calcula el bot.
+    print("\n" + "=" * 76)
+    print("  D) ACTIVIDAD CAUSAL — disparos en los 60 min ANTERIORES (lo único que se sabe en vivo)")
+    print("=" * 76)
+    filas.sort(key=lambda f: f["t"])
+    # Cortar en trozos: un hueco >1800 s sin un solo disparo es el grabador parado, no calma
+    # (a 64/h, el cuartil mas tranquilo, media hora en blanco es practicamente imposible).
+    ini, j, buenas = filas[0]["t"], 0, []
+    for i, f in enumerate(filas):
+        if i and f["t"] - filas[i - 1]["t"] > 1800: ini = f["t"]; continue
+        while filas[j]["t"] < f["t"] - 3600: j += 1
+        if f["t"] - ini >= 3600: f["act"] = i - j; buenas.append(f)
+    print(f"  disparos con una hora limpia por detras: {len(buenas)} de {len(filas)}")
+    if len(buenas) < 200:
+        print("  muestra corta para esto — hacen falta tramos largos sin cortes")
+    else:
+        ac = sorted(f["act"] for f in buenas)
+        qc = [ac[int(len(ac) * p)] for p in (0.25, 0.50, 0.75)]
+        print(f"  disparos/hora causal: mín {ac[0]} · cuartiles {qc[0]}/{qc[1]}/{qc[2]} · máx {ac[-1]}")
+        print(f"  {'actividad causal':>22}{'n':>8}{'MECANISMO':>18}{'A RESOLUCIÓN':>20}")
+        for nm, lo, hi in [("tranquila (≤Q1)", -1, qc[0]), ("media-baja", qc[0], qc[1]),
+                           ("media-alta", qc[1], qc[2]), ("agitada (>Q3)", qc[2], 10 ** 9)]:
+            v = [f for f in buenas if lo < f["act"] <= hi]
+            if len(v) < 20: print(f"  {nm:>22}{len(v):>8}   (pocos)"); continue
+            rr = [x["res"] for x in v if x["res"] is not None]
+            print(f"  {nm:>22}{len(v):>8}{fmt(stat([x['mec'] for x in v])):>18}{fmt(stat(rr)):>20}")
+        print(f"\n  ⚠ el umbral que debe llevar el bot es el Q1 CAUSAL = {qc[0]}, no el de la hora de reloj.")
+        print(f"     STALEBOT_MAX_ACT={qc[0]}")
+
     print("\nLECTURA: si el edge sube con la actividad y el filtro conserva buena parte de los disparos,")
     print("merece la pena encender el bot solo en esas horas: sube el resultado por operación Y hacen falta")
     print("menos órdenes para medir algo, que con el saldo contado es lo que interesa. Si sale plano, la")
