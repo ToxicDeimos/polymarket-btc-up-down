@@ -123,7 +123,35 @@ def main():
                   f"{(100*s[0]/sf[0] if sf and sf[0] and s else 0):>15.0f}%")
         print(f"  {'RESOLUCIÓN':>10}{fmt(sf):>34}{100:>15.0f}%")
 
+    def pareja(v, titulo):
+        """Diferencias EMPAREJADAS: mismo disparo medido en dos momentos. Las barras de la tabla de
+        arriba son sin emparejar y exageran el ruido -- mid8 y mid120 estan correlacionadisimos, asi
+        que la resta tiene mucha menos varianza que la suma de sus barras."""
+        print("\n" + "=" * 78)
+        print(f"  {titulo}   (n = {len(v)})")
+        print("=" * 78)
+        print("  a) ¿sigue moviéndose el medio DESPUÉS de los 8 s?   (mid_plazo − mid_8s)")
+        print(f"  {'plazo':>10}{'se mueve':>22}{'z':>8}")
+        for i, h in enumerate(TARDE):
+            d = [x["mids"][i] - x["m8"] for x in v]
+            s = stat(d)
+            if not s: continue
+            print(f"  {f'{int(h)} s':>10}{fmt(s):>22}{s[0]/s[1]:>8.1f}")
+        print("\n  b) ¿queda algo por cobrar MÁS ALLÁ de cada plazo?   (resultado − mid_plazo)")
+        print(f"  {'plazo':>10}{'queda':>22}{'z':>8}")
+        s = stat([x["won"] - x["m8"] for x in v])
+        print(f"  {'8 s':>10}{fmt(s):>22}{s[0]/s[1]:>8.1f}")
+        for i, h in enumerate(TARDE):
+            d = [x["won"] - x["mids"][i] for x in v]
+            s = stat(d)
+            if not s: continue
+            print(f"  {f'{int(h)} s':>10}{fmt(s):>22}{s[0]/s[1]:>8.1f}")
+        print("\n  (b) tiene un suelo de ruido irreducible: el resultado es binario, así que su error")
+        print("      típico no baja de ~1,5pp con esta n por mucho que emparejemos. (a) no: ahí el")
+        print("      emparejamiento sí muerde y es donde está la respuesta.")
+
     curva(comp, "TRAYECTORIA DEL MEDIO DESPUÉS DE COMPRAR")
+    pareja(comp, "LO MISMO, EMPAREJADO (es lo que hay que mirar)")
     tr = [f for f in comp if f["act"] is not None and f["act"] <= MAX_ACT]
     if len(tr) >= 100:
         curva(tr, f"SOLO RÉGIMEN TRANQUILO (≤{MAX_ACT}/h causal)")
