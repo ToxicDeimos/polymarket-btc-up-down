@@ -80,13 +80,20 @@ JW = 1.0            # solo para el campo "salto" del registro
 # cada fila y el barrido no mezcla.
 TRIGID = ";".join(f"{w}/{t:g}" for w, t in TRIG)
 
-# La cabecera se GENERA de MVW. Dos veces se me desincronizaron a mano y el analisis quedo ciego.
+# 300 y 400 ms NO son decorado: el registro del bot rescatado del disco da un ms_envio real de
+# 199-388 ms (mediana 260) en las ordenes del 25-sep, cuando el presupuesto suponia 52. Aunque sea
+# ida y vuelta y la llegada al motor sea la mitad, vivimos cerca de 200 ms y la rejilla se acababa
+# justo ahi. Sin estas dos columnas no se puede medir el regimen en el que de verdad operamos.
+SNAPS = (0.0, 0.052, 0.100, 0.200, 0.300, 0.400)
+def snapcol(k): return round(k * 1000)      # 0.052 -> 52, igual que los nombres de siempre
+
+# La cabecera se GENERA de MVW y de SNAPS. Tenerlas a mano ya me dejo el analisis ciego dos veces,
+# y las latencias estaban escritas a mano aqui mismo mientras SNAPS iba por su cuenta.
 H = (["ts_salto", "ws", "tok", "salto", "react_ms", "trig"]
-     + [c for k in (0, 52, 100, 200) for c in (f"ask{k}", f"sz{k}")]
+     + [c for k in SNAPS for c in (f"ask{snapcol(k)}", f"sz{snapcol(k)}")]
      + ["mid8s", "spread0", "oask52", "osz52", "omid8s"]   # o* = token CONTRARIO (espejo)
      + [mvcol(w) for w in MVW])
 COOL = 10.0
-SNAPS = (0.0, 0.052, 0.100, 0.200)     # 52 ms = nuestra latencia medida de envío
 SETTLE = 8.0
 LOCK = threading.Lock()
 
