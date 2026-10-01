@@ -30,10 +30,16 @@ DIR = os.path.dirname(__file__)
 # vieja de 15 y write() solo la escribe si el fichero no existe: las columnas nuevas se guardaban pero sin
 # nombre, y DictReader las tiraba — por eso el barrido salía vacío. Los datos viejos NO se tocan: siguen en
 # stalepaper.csv y --analyze lee todos los ficheros, cada uno con su propia cabecera.
-LOG = os.path.join(DIR, "stalepaper_v4.csv")
+# El colector puede correr en OTRA maquina (el PC mientras la Pi esta caida, por ejemplo). Esa maquina
+# es OTRO INSTRUMENTO: otra ruta de red, otro reloj, otra latencia. Las columnas de ask a 0/52/100/200 ms
+# NO son comparables con las de la Pi. Asi que escribe a ficheros con su propio prefijo y que cada
+# analisis decida si los quiere. Mezclarlos en silencio seria el mismo sesgo que ya nos mordio dos veces.
+#     STALEPAPER_PREFIJO=pcpaper python3 stalepaper.py
+PREFIJO = (os.environ.get("STALEPAPER_PREFIJO") or "stalepaper").strip()
+LOG = os.path.join(DIR, f"{PREFIJO}_v4.csv")
 # Medio del libro a plazos LARGOS, para ver si a los 8 s ha terminado de recotizar o sigue.
 TARDE = (15.0, 30.0, 60.0, 120.0)
-LOG_TARDE = os.path.join(DIR, "stalepaper_tarde.csv")
+LOG_TARDE = os.path.join(DIR, f"{PREFIJO}_tarde.csv")
 # Se guarda tambien BTC en cada plazo. El ruido que ahoga la medida no es de medicion: es que entre los
 # 8 s y los 120 s BTC SE MUEVE DE VERDAD, y el medio le sigue. Eso no es "recotizar tarde", es
 # informacion nueva. Con el spot se puede descontar y quedarse con la parte que no explica BTC.
