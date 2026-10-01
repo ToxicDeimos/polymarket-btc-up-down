@@ -69,9 +69,10 @@ def main():
         return
 
     tarde = {}
-    for r in csv.DictReader(open(LOG_TARDE, encoding="utf-8")):
-        if r.get("trig") != TRIGID: continue
-        tarde[r["ts_salto"]] = r
+    for p in sorted(glob.glob(os.path.join(DIR, "stalepaper_tarde*.csv"))):
+        for r in csv.DictReader(open(p, encoding="utf-8")):
+            if r.get("trig") != TRIGID: continue
+            tarde[r["ts_salto"]] = r          # las versiones viejas no traen spot: se usan igual en (a) y (b)
 
     R = []
     for p in sorted(glob.glob(os.path.join(DIR, "stalepaper*.csv"))):
@@ -88,7 +89,7 @@ def main():
         try: t = float(r["ts_salto"])
         except Exception: continue
         w = RES.get(int(r["ws"])) if r.get("ws") else None
-        filas.append({"t": t, "a": a, "m8": m8, "tr": tarde.get(r["ts_salto"]),
+        filas.append({"t": t, "a": a, "m8": m8, "tok": r.get("tok"), "tr": tarde.get(r["ts_salto"]),
                       "won": None if w is None else (1.0 if w == r.get("tok") else 0.0)})
     actividad(filas)
 
@@ -99,7 +100,13 @@ def main():
         if not f["tr"] or f["won"] is None: continue
         v = [num(f["tr"].get(c)) for c in cols]
         if any(x is None for x in v): continue
-        f["mids"] = v; comp.append(f)
+        f["mids"] = v
+        def spot(k):
+            try: return float(f["tr"].get(k) or 0) or None
+            except Exception: return None
+        f["s0"] = spot("spot0")
+        f["spots"] = [spot(f"spot{int(h)}s") for h in TARDE]
+        comp.append(f)
     print(f"disparos con los cuatro plazos Y resolución: {len(comp)}")
     if len(comp) < 100:
         print("\nmuestra corta todavía — dejar correr stalepaper unas horas más y repetir.")
@@ -150,8 +157,44 @@ def main():
         print("      típico no baja de ~1,5pp con esta n por mucho que emparejemos. (a) no: ahí el")
         print("      emparejamiento sí muerde y es donde está la respuesta.")
 
+    def descontando_btc(v):
+        """El ruido que ahoga (a) no es de medicion: entre los 8 s y los 120 s BTC se mueve de verdad y
+        el medio le sigue. Eso NO es recotizar tarde, es informacion nueva. Se descuenta ajustando
+            (mid_h - mid_8) = alfa + beta * (spot_h - spot_8)
+        por minimos cuadrados; alfa es la deriva que BTC NO explica, que es la que buscamos."""
+        print("\n" + "=" * 78)
+        print("  DESCONTANDO EL MOVIMIENTO DE BTC   (α = deriva que BTC no explica)")
+        print("=" * 78)
+        con = [x for x in v if x.get("s0") is not None and all(s is not None for s in x["spots"])]
+        print(f"  disparos con spot guardado: {len(con)} de {len(v)}")
+        if len(con) < 150:
+            print("  aún no hay bastantes con spot — es la versión nueva de stalepaper, hace falta que")
+            print("  corra unas horas. Hasta entonces manda la tabla emparejada de arriba.")
+            return
+        print(f"  {'plazo':>10}{'α (sin explicar)':>24}{'z':>7}{'β ($/pp)':>12}{'ruido quitado':>16}")
+        for i, h in enumerate(TARDE):
+            # signo: compramos 'tok', asi que si es Down una BAJADA de BTC nos favorece
+            xs = [(1 if x["tok"] == "Up" else -1) * (x["spots"][i] - x["s0"]) for x in con]
+            ys = [x["mids"][i] - x["m8"] for x in con]
+            n = len(xs); mx = sum(xs) / n; my = sum(ys) / n
+            sxx = sum((a - mx) ** 2 for a in xs)
+            if sxx <= 0: continue
+            beta = sum((a - mx) * (b - my) for a, b in zip(xs, ys)) / sxx
+            alfa = my - beta * mx
+            res = [b - (alfa + beta * a) for a, b in zip(xs, ys)]
+            # error tipico de alfa en una regresion simple
+            s2 = sum(r * r for r in res) / max(n - 2, 1)
+            se = (s2 * (1.0 / n + mx * mx / sxx)) ** 0.5
+            crudo = stat(ys)
+            print(f"  {f'{int(h)} s':>10}{100*alfa:>+16.2f} ± {100*se:<5.2f}{alfa/se if se else 0:>7.1f}"
+                  f"{beta*100:>11.3f}{f'{100*(1 - se/(crudo[1]/100)):.0f}%' if crudo else '—':>16}")
+        print("\n  β dice cuánto se mueve el medio (en pp) por cada dólar de BTC a nuestro favor: es la")
+        print("  sensibilidad del mercado, y sirve de comprobación — tiene que salir positiva.")
+        print("  α es la respuesta: si es > 0 con z alto, el libro seguía recotizando a los 8 s.")
+
     curva(comp, "TRAYECTORIA DEL MEDIO DESPUÉS DE COMPRAR")
-    pareja(comp, "LO MISMO, EMPAREJADO (es lo que hay que mirar)")
+    pareja(comp, "LO MISMO, EMPAREJADO")
+    descontando_btc(comp)
     tr = [f for f in comp if f["act"] is not None and f["act"] <= MAX_ACT]
     if len(tr) >= 100:
         curva(tr, f"SOLO RÉGIMEN TRANQUILO (≤{MAX_ACT}/h causal)")

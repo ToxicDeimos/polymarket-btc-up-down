@@ -34,7 +34,11 @@ LOG = os.path.join(DIR, "stalepaper_v4.csv")
 # Medio del libro a plazos LARGOS, para ver si a los 8 s ha terminado de recotizar o sigue.
 TARDE = (15.0, 30.0, 60.0, 120.0)
 LOG_TARDE = os.path.join(DIR, "stalepaper_tarde.csv")
-H_TARDE = ["ts_salto", "ws", "tok", "trig"] + [f"mid{int(h)}s" for h in TARDE]
+# Se guarda tambien BTC en cada plazo. El ruido que ahoga la medida no es de medicion: es que entre los
+# 8 s y los 120 s BTC SE MUEVE DE VERDAD, y el medio le sigue. Eso no es "recotizar tarde", es
+# informacion nueva. Con el spot se puede descontar y quedarse con la parte que no explica BTC.
+H_TARDE = (["ts_salto", "ws", "tok", "trig", "spot0"]
+           + [f"mid{int(h)}s" for h in TARDE] + [f"spot{int(h)}s" for h in TARDE])
 WSS = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 SPOT_WSS = "wss://stream.binance.com:9443/ws/btcusdt@bookTicker"
 
@@ -120,6 +124,13 @@ def write(row):
 
 def escribe_tarde(row):
     with LOCK:
+        # misma cautela que write(): si la cabecera cambio, el fichero viejo se APARTA, no se pisa.
+        if os.path.exists(LOG_TARDE):
+            try:
+                with open(LOG_TARDE, encoding="utf-8") as f: vieja = next(csv.reader(f), [])
+            except Exception: vieja = []
+            if vieja and vieja != H_TARDE:
+                os.rename(LOG_TARDE, LOG_TARDE.replace(".csv", time.strftime("_%Y%m%d%H%M%S.csv")))
         nuevo = not os.path.exists(LOG_TARDE)
         with open(LOG_TARDE, "a", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
@@ -203,13 +214,17 @@ def run_window(ws, mk):
         # es que a los 8 s el libro TODAVIA no ha terminado de recotizar: si el medio sigue subiendo a 15,
         # 30 y 60 s, mid8s no es el pronostico asentado y el markout se queda corto.
         # Va a otro fichero para no tocar el que lleva 19.000 filas acumuladas: se junta luego por ts_salto.
-        tarde, plazos = {}, [h for h in TARDE if t0 + h < close - 13]
+        tarde, spot, plazos = {}, {}, [h for h in TARDE if t0 + h < close - 13]
         if plazos:
+            s0 = hist[-1][1] if hist else None
             def tardio(h):
                 tarde[h] = snap(tok)[2]
+                spot[h] = hist[-1][1] if hist else None
                 if h == plazos[-1]:
-                    escribe_tarde([round(t0, 3), ws, tok, TRIGID]
-                                  + [round(tarde[x], 4) if tarde.get(x) else "" for x in TARDE])
+                    escribe_tarde([round(t0, 3), ws, tok, TRIGID,
+                                   round(s0, 2) if s0 else ""]
+                                  + [round(tarde[x], 4) if tarde.get(x) else "" for x in TARDE]
+                                  + [round(spot[x], 2) if spot.get(x) else "" for x in TARDE])
             for h in plazos: threading.Timer(h, tardio, args=(h,)).start()
 
     def on_spot(w, msg):
