@@ -28,8 +28,14 @@ SEGURIDAD (dos cerrojos, y por defecto NO opera):
   · fichero STOP en este directorio → deja de operar inmediatamente
   · la clave sale del entorno, nunca del código, y no se imprime jamás
 
+⚠ stalebot NO lee ningun fichero: todo sale de os.environ. El .env hay que CARGARLO a mano, y tiene
+  que ser el de ESTE directorio (research/.env), no el de la raiz del proyecto. El de la raiz es de
+  otra epoca y le faltan POLY_SIGNATURE_TYPE y POLY_FUNDER, sin las cuales el CLOB V2 rechaza las
+  ordenes con "maker address not allowed". Cargar el que no es falla de una forma que no lo parece.
+
     cp .env.example .env     &&  editar .env con la clave
     python3 stalebot.py                      # simulado, no manda nada
+    set -a && . ./.env && set +a             # <- el de research/, ojo
     STALEBOT_LIVE=yes python3 stalebot.py --live     # real, tamaño mínimo
 """
 import websocket, json, time, threading, csv, os, sys, urllib.request
