@@ -1,5 +1,10 @@
 # Secretos
+# Ojo: ".env" a secas NO cubre .env.bak ni .env.local. Una copia de seguridad del .env dentro del
+# repo se subiria con las credenciales dentro.
 .env
+.env.*
+!.env.example
+*.bak
 
 # Python
 __pycache__/
