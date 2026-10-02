@@ -232,11 +232,28 @@ def ventana(ws, mk):
     lv = {"Up": {}, "Down": {}}
     hist = []; ultimo = [0.0]; hecho = [False]; dicho = [False]   # dicho: ya avisamos en esta ventana
 
-    # ⛔ Aqui se calentaba la conexion con un get_ok() antes de cada ventana, por si parte de los
-    # ~450 ms del envio era el saludo TCP+TLS. MEDIDO Y NO SIRVE: mediana 402 ms sin calentar (n=8)
-    # y 401 ms calentando (n=9). Los ~450 ms son el servidor de Polymarket procesando la orden, no
-    # el saludo. Se quita en vez de dejarlo "por si acaso": costaba una peticion y una linea por
-    # ventana a cambio de cero. (La red, medida aparte: 61 ms en caliente, 74 ms el saludo.)
+    # ⛔ Antes aqui se calentaba la CONEXION con un get_ok(). Medido y NO servia: 402 ms de mediana
+    # sin calentar (n=8), 401 calentando (n=9). Lo que habia que calentar era otra cosa.
+    #
+    # ✅ Lo que SI cuesta: create_order() hace DOS peticiones HTTP antes de firmar, aunque le demos
+    # el tick y el neg_risk hechos — GET /tick-size?token_id=… y GET /version. Medido: 100 + 106 ms.
+    # De los ~450 ms del envio, 206 eran el SDK preguntando lo que ya sabiamos. Y LAS CACHEA: la
+    # segunda firma del mismo token baja a 8 ms con cero peticiones. El tick se cachea por token, la
+    # version es global; el lado contrario cuesta su propio tick-size (81 ms).
+    # Asi que se firma una orden de mentira de CADA lado al abrir la ventana — nunca se envia, se
+    # tira — y la de verdad sale con las cachés llenas. Aqui sobran 300 s; luego sobran 100 ms.
+    if LIVE and CLIENT[0] is not None:
+        from py_clob_client_v2 import OrderArgs, PartialCreateOrderOptions, Side
+        t0 = time.time()
+        try:
+            op = PartialCreateOrderOptions(tick_size=mk["tick"], neg_risk=mk["neg_risk"])
+            for tk in ("Up", "Down"):
+                CLIENT[0].create_order(
+                    order_args=OrderArgs(token_id=toks[tk], price=0.50, side=Side.BUY, size=10),
+                    options=op)                      # firmada y descartada: no sale de aqui
+            print(f"   [cachés] tick y version precargados en {1000*(time.time()-t0):.0f} ms", flush=True)
+        except Exception as e:
+            print(f"   [cachés] no se pudieron precargar: {str(e)[:70]}", flush=True)
 
     def on_open(w): w.send(json.dumps({"type": "market", "assets_ids": [toks["Up"], toks["Down"]]}))
 
