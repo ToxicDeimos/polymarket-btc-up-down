@@ -239,7 +239,7 @@ def ventana(ws, mk):
     bk = {"Up": [None, None, 0.0], "Down": [None, None, 0.0]}
     lv = {"Up": {}, "Down": {}}
     hist = []; ultimo = [0.0]; hecho = [False]; dicho = [False]   # dicho: ya avisamos en esta ventana
-    ndet = [0]                                   # detecciones de ESTA ventana, para el vigilante
+    ndet = [0]; sinlibro = [0]                   # detecciones de ESTA ventana / descartadas sin libro
 
     # ⛔ Antes aqui se calentaba la CONEXION con un get_ok(). Medido y NO servia: 402 ms de mediana
     # sin calentar (n=8), 401 calentando (n=9). Lo que habia que calentar era otra cosa.
@@ -383,7 +383,12 @@ def ventana(ws, mk):
         if close - t < MIN_TTC: return
         tok = "Up" if disp > 0 else "Down"
         ask = bk[tok][1]
-        if ask is None or not (MIN_PRICE <= ask <= MAX_PRICE): return
+        # 🔇 Esta puerta era MUDA, y por eso el 2-oct nos quedamos sin diagnostico: si el libro de
+        # Polymarket se vacia, Binance puede seguir detectando a destajo y no sale ni una orden, sin
+        # distinguirse de "no hubo detecciones". Se cuentan aparte para que la proxima vez se sepa
+        # CUAL de los dos feeds murio.
+        if ask is None: sinlibro[0] += 1; return
+        if not (MIN_PRICE <= ask <= MAX_PRICE): return
         if t - T0 < WARM:                        # aun no se sabe si el rato es tranquilo o agitado
             if not dicho[0]:
                 dicho[0] = True
@@ -404,10 +409,17 @@ def ventana(ws, mk):
     threading.Thread(target=lambda: sapp.run_forever(ping_interval=20, ping_timeout=10), daemon=True).start()
     while time.time() < close - 5: time.sleep(0.4)
     app.close(); sapp.close()
-    VACIAS[0] = 0 if ndet[0] else VACIAS[0] + 1
+    # Sordo es tanto no detectar (Binance mudo) como detectar y no tener libro (Polymarket mudo).
+    util = ndet[0] > 0 and sinlibro[0] < ndet[0]
+    VACIAS[0] = 0 if util else VACIAS[0] + 1
     if not ndet[0]:
-        print(f"   ⚠ ventana SIN NINGUNA deteccion ({VACIAS[0]}/{MAX_VACIAS}) "
-              f"— o BTC esta plano del todo, o los feeds estan mudos", flush=True)
+        print(f"   ⚠ ventana SIN NINGUNA deteccion ({VACIAS[0]}/{MAX_VACIAS}) — "
+              f"BTC plano del todo, o el feed de BINANCE mudo", flush=True)
+    elif sinlibro[0] >= ndet[0]:
+        print(f"   ⚠ {ndet[0]} detecciones y NINGUNA con libro ({VACIAS[0]}/{MAX_VACIAS}) — "
+              f"el feed de POLYMARKET esta mudo", flush=True)
+    elif sinlibro[0]:
+        print(f"   ({sinlibro[0]} de {ndet[0]} detecciones sin libro)", flush=True)
 
 
 def main():
