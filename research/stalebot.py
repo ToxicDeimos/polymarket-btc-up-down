@@ -232,17 +232,11 @@ def ventana(ws, mk):
     lv = {"Up": {}, "Down": {}}
     hist = []; ultimo = [0.0]; hecho = [False]; dicho = [False]   # dicho: ya avisamos en esta ventana
 
-    # Conexion CALIENTE. Las cuatro primeras ordenes reales tardaron 448, 625, 419 y 384 ms: la
-    # tendencia a la baja encaja con que la conexion TLS se va reutilizando. Si parte de esos
-    # cientos de milisegundos es el saludo, pagarlo AHORA -- con 300 s por delante y nada en juego --
-    # en vez de cuando el reloj corre, sale gratis. Si no cambia nada, lo sabremos por el ms_envio.
-    if LIVE and CLIENT[0] is not None:
-        t0 = time.time()
-        try:
-            CLIENT[0].get_ok()
-            print(f"   [conexion] calentada en {1000*(time.time()-t0):.0f} ms", flush=True)
-        except Exception as e:
-            print(f"   [conexion] no se pudo calentar: {str(e)[:70]}", flush=True)
+    # ⛔ Aqui se calentaba la conexion con un get_ok() antes de cada ventana, por si parte de los
+    # ~450 ms del envio era el saludo TCP+TLS. MEDIDO Y NO SIRVE: mediana 402 ms sin calentar (n=8)
+    # y 401 ms calentando (n=9). Los ~450 ms son el servidor de Polymarket procesando la orden, no
+    # el saludo. Se quita en vez de dejarlo "por si acaso": costaba una peticion y una linea por
+    # ventana a cambio de cero. (La red, medida aparte: 61 ms en caliente, 74 ms el saludo.)
 
     def on_open(w): w.send(json.dumps({"type": "market", "assets_ids": [toks["Up"], toks["Down"]]}))
 
