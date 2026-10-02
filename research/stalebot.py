@@ -71,6 +71,14 @@ MIN_TTC = 60.0        # con menos de 60 s por delante el mecanismo salía NEGATI
 # rato observado. Y hasta llevar WARM encendido no se opera, porque con 2 minutos la tasa es ruido puro.
 MAX_ACT = int((os.environ.get("STALEBOT_MAX_ACT") or "102").strip())
 DETS = []             # marcas de tiempo de las detecciones, para la ventana movil de 60 min
+# 🔇 VIGILANTE DE SORDERA. Tres veces nos ha pasado ya que un proceso siga vivo, siga recorriendo
+# ventanas y precargando caches, y NO DETECTE NADA durante horas: el 1-oct el colector estuvo 11,3 h
+# mudo, y el 2-oct el bot 3,6 h sin una sola orden con los dos feeds funcionando perfectamente desde
+# otro proceso. La deteccion muere en silencio porque "ask is None" descarta sin imprimir y los
+# on_error son no-ops. Un bot con dinero que deja de funcionar y no lo dice es inaceptable: si pasan
+# VACIAS ventanas seguidas, avisa; y si sigue, SALE, que es la unica forma de que alguien se entere.
+VACIAS = [0]
+MAX_VACIAS = 3
 WARM = 300.0          # 5 min de calentamiento antes de la primera orden
 T0 = time.time()
 
@@ -231,6 +239,7 @@ def ventana(ws, mk):
     bk = {"Up": [None, None, 0.0], "Down": [None, None, 0.0]}
     lv = {"Up": {}, "Down": {}}
     hist = []; ultimo = [0.0]; hecho = [False]; dicho = [False]   # dicho: ya avisamos en esta ventana
+    ndet = [0]                                   # detecciones de ESTA ventana, para el vigilante
 
     # ⛔ Antes aqui se calentaba la CONEXION con un get_ok(). Medido y NO servia: 402 ms de mediana
     # sin calentar (n=8), 401 calentando (n=9). Lo que habia que calentar era otra cosa.
@@ -367,7 +376,7 @@ def ventana(ws, mk):
 
         # DETECCION: se cuenta SIEMPRE, aunque no vayamos a operar. Ventana movil de 60 min.
         ultimo[0] = t
-        DETS.append(t)
+        DETS.append(t); ndet[0] += 1
         while DETS and DETS[0] < t - 3600: DETS.pop(0)
 
         if hecho[0]: return                      # UNA orden por ventana
@@ -395,6 +404,10 @@ def ventana(ws, mk):
     threading.Thread(target=lambda: sapp.run_forever(ping_interval=20, ping_timeout=10), daemon=True).start()
     while time.time() < close - 5: time.sleep(0.4)
     app.close(); sapp.close()
+    VACIAS[0] = 0 if ndet[0] else VACIAS[0] + 1
+    if not ndet[0]:
+        print(f"   ⚠ ventana SIN NINGUNA deteccion ({VACIAS[0]}/{MAX_VACIAS}) "
+              f"— o BTC esta plano del todo, o los feeds estan mudos", flush=True)
 
 
 def main():
@@ -426,6 +439,13 @@ def main():
             print(f"── {ws} tick {mk['tick']} · neg_risk {mk['neg_risk']} · "
                   f"cierra en {int(ws + 300 - time.time())}s", flush=True)
             ventana(ws, mk)
+            if VACIAS[0] >= MAX_VACIAS:
+                print("", flush=True)
+                print(f"⛔ {VACIAS[0]} ventanas seguidas SIN UNA SOLA DETECCION.", flush=True)
+                print("   Los feeds estan mudos aunque el proceso siga vivo. Salgo para que se note.",
+                      flush=True)
+                print("   Relanzar; si se repite enseguida, mirar las conexiones WSS.", flush=True)
+                return
     except KeyboardInterrupt:
         print("\nparando…", flush=True)
 
