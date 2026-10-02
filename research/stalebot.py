@@ -38,7 +38,7 @@ SEGURIDAD (dos cerrojos, y por defecto NO opera):
     set -a && . ./.env && set +a             # <- el de research/, ojo
     STALEBOT_LIVE=yes python3 stalebot.py --live     # real, tamaño mínimo
 """
-import websocket, json, time, threading, csv, os, sys, urllib.request
+import websocket, json, time, threading, csv, os, sys, urllib.request, math
 
 DIR = os.path.dirname(__file__)
 LOG = os.path.join(DIR, "stalebot_log.csv")
@@ -194,11 +194,19 @@ def arranca_cliente():
     return c
 
 
-def manda_orden(token_id, precio, tick, neg_risk):
+def cuantas(ask):
+    """Acciones a pedir. Hay DOS minimos y solo conociamos uno:
+         · 5 acciones  (minimum_order_size del mercado)
+         · 1,00 $ de importe  ->  "invalid amount for a marketable BUY order ($0.95), min size: 1"
+       Con el ask a 0,19 las 5 acciones son 0,95 $ y el CLOB la rechaza. Se sube lo justo."""
+    return max(SIZE, math.ceil(1.01 / ask)) if ask > 0 else SIZE
+
+
+def manda_orden(token_id, precio, tick, neg_risk, n):
     """Compra FAK (inmediata, admite relleno parcial) al precio visto. Devuelve (estado, size, precio, id, err)."""
     from py_clob_client_v2 import OrderArgs, OrderType, PartialCreateOrderOptions, Side
     r = CLIENT[0].create_and_post_order(
-        order_args=OrderArgs(token_id=token_id, price=precio, side=Side.BUY, size=SIZE),
+        order_args=OrderArgs(token_id=token_id, price=precio, side=Side.BUY, size=n),
         options=PartialCreateOrderOptions(tick_size=tick, neg_risk=neg_risk),
         order_type=OrderType.FAK)
     d = r if isinstance(r, dict) else getattr(r, "__dict__", {"resp": str(r)})
@@ -216,6 +224,18 @@ def ventana(ws, mk):
     bk = {"Up": [None, None, 0.0], "Down": [None, None, 0.0]}
     lv = {"Up": {}, "Down": {}}
     hist = []; ultimo = [0.0]; hecho = [False]; dicho = [False]   # dicho: ya avisamos en esta ventana
+
+    # Conexion CALIENTE. Las cuatro primeras ordenes reales tardaron 448, 625, 419 y 384 ms: la
+    # tendencia a la baja encaja con que la conexion TLS se va reutilizando. Si parte de esos
+    # cientos de milisegundos es el saludo, pagarlo AHORA -- con 300 s por delante y nada en juego --
+    # en vez de cuando el reloj corre, sale gratis. Si no cambia nada, lo sabremos por el ms_envio.
+    if LIVE and CLIENT[0] is not None:
+        t0 = time.time()
+        try:
+            CLIENT[0].get_ok()
+            print(f"   [conexion] calentada en {1000*(time.time()-t0):.0f} ms", flush=True)
+        except Exception as e:
+            print(f"   [conexion] no se pudo calentar: {str(e)[:70]}", flush=True)
 
     def on_open(w): w.send(json.dumps({"type": "market", "assets_ids": [toks["Up"], toks["Down"]]}))
 
@@ -249,10 +269,11 @@ def ventana(ws, mk):
     def dispara(t, tok):
         ask, tam = bk[tok][1], bk[tok][2]
         ttc = close - t
-        coste = ask * SIZE
+        n = cuantas(ask)
+        coste = ask * n
         motivo = puedo_gastar(coste)
         base = [round(t, 3), ws, tok, toks[tok], round(ttc, 1), ask, round(tam),
-                ask, SIZE, round(tasa(t))]
+                ask, n, round(tasa(t))]
         if motivo:
             apunta(base + ["bloqueado", "", motivo, "", "", "", "", ""]); return
         if not LIVE:
@@ -266,7 +287,7 @@ def ventana(ws, mk):
         # saldo suficiente para tener esos ms_envio.
         t0 = time.time()
         try:
-            est, size, px, oid, err, crudo = manda_orden(toks[tok], ask, mk["tick"], mk["neg_risk"])
+            est, size, px, oid, err, crudo = manda_orden(toks[tok], ask, mk["tick"], mk["neg_risk"], n)
         except Exception as e:
             ms = round(1000 * (time.time() - t0), 1); txt = str(e)
             # Un FAK sin contraparte es un NO rotundo del propio CLOB: no se compro nada, no se gasto
@@ -295,7 +316,7 @@ def ventana(ws, mk):
         if not (gastado > 0): gastado = coste
         DIA["gasto"] += gastado
         apunta(base + ["real", ms, est, size, px, oid, err, crudo])
-        print(f"   [real] {tok} pedido {SIZE}@{ask} → {est} size={size} en {ms:.0f}ms · "
+        print(f"   [real] {tok} pedido {n}@{ask} → {est} size={size} en {ms:.0f}ms · "
               f"gastado hoy {DIA['gasto']:.2f}$", flush=True)
 
     def on_spot(w, msg):
