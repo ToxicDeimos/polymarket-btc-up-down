@@ -268,12 +268,22 @@ def ventana(ws, mk):
         try:
             est, size, px, oid, err, crudo = manda_orden(toks[tok], ask, mk["tick"], mk["neg_risk"])
         except Exception as e:
-            # 🔒 Un plazo agotado se agota en NUESTRO lado: la orden puede haber entrado igual y no hay
-            # forma de saberlo desde aqui. Se cuenta como gastada. Si no, un tramo de red mala dejaria
-            # el tope sin morder y el bot seguiria mandando ordenes que quiza si estan comprando.
-            DIA["ordenes"] += 1; DIA["gasto"] += coste
-            apunta(base + ["real", round(1000 * (time.time() - t0), 1), "excepcion", "", "", "", str(e)[:180], ""])
-            print(f"   [error] {e}", flush=True); return
+            ms = round(1000 * (time.time() - t0), 1); txt = str(e)
+            # Un FAK sin contraparte es un NO rotundo del propio CLOB: no se compro nada, no se gasto
+            # nada, y contarlo como gasto quema el presupuesto en operaciones que no existieron.
+            # Distinto de un plazo agotado, que se agota en NUESTRO lado y deja la duda de si entro:
+            # 🔒 ahi se sigue asumiendo lo peor. Solo esta frase exacta cuenta como gasto cero.
+            matada = "no orders found to match" in txt
+            DIA["ordenes"] += 1
+            if not matada: DIA["gasto"] += coste
+            apunta(base + ["real", ms, "matada" if matada else "excepcion",
+                           0 if matada else "", "", "", txt[:180], ""])
+            if matada:
+                print(f"   [matada] nadie vendia {tok} a {ask} cuando llego la orden · {ms:.0f} ms · "
+                      f"habia {tam:.0f} acciones al enviarla", flush=True)
+            else:
+                print(f"   [error] {e}", flush=True)
+            return
         ms = round(1000 * (time.time() - t0), 1)
         DIA["ordenes"] += 1
         # 🔒 Si no sabemos cuanto se lleno (campos mal adivinados -> size vacio -> 0), NO se puede sumar 0:
