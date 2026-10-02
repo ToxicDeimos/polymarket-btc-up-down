@@ -76,7 +76,9 @@ def main():
 
     R = []
     for p in sorted(glob.glob(os.path.join(DIR, "stalepaper*.csv"))):
-        if os.path.abspath(p) == os.path.abspath(LOG_TARDE): continue
+        # excluir por NOMBRE, no solo el LOG_TARDE exacto: al rotar la cabecera quedan
+        # stalepaper_tarde_2026....csv, que casan con el glob igual.
+        if "_tarde" in os.path.basename(p): continue
         with open(p, encoding="utf-8") as fh: R.extend(csv.DictReader(fh))
     R = [r for r in R if r.get("trig") == TRIGID]
     print(f"disparos del disparador actual: {len(R)} · con plazos largos: {len(tarde)}")

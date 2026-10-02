@@ -38,6 +38,7 @@ MAX_ACT = 102          # el primer cuartil causal (regimen.py D)
 def carga():
     R = []
     for p in sorted(glob.glob(os.path.join(DIR, "stalepaper*.csv"))):
+        if "_tarde" in os.path.basename(p): continue     # el tarde NO son disparos, ver regimen.py
         with open(p, encoding="utf-8") as fh: R.extend(csv.DictReader(fh))
     return [r for r in R if r.get("trig") == TRIGID]
 

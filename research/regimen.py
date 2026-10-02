@@ -30,6 +30,10 @@ from stalepaper import fee, _resol, TRIGID      # noqa: E402  (mismo criterio qu
 def carga():
     R = []
     for p in sorted(glob.glob(os.path.join(DIR, "stalepaper*.csv"))):
+        # "stalepaper*" tambien casa con stalepaper_tarde.csv, que NO son disparos sino medios a
+        # plazos largos. Sus filas se caian solas al faltarles ask52, pero por una excepcion, no por
+        # diseno: si manana el tarde llevara un ask52, entrarian sin que nadie se enterase.
+        if "_tarde" in os.path.basename(p): continue
         with open(p, encoding="utf-8") as fh: R.extend(csv.DictReader(fh))
     return [r for r in R if r.get("trig") == TRIGID]
 
