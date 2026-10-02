@@ -35,12 +35,30 @@ TICK = 0.01
 MAX_ACT = 102          # el primer cuartil causal (regimen.py D)
 
 
+# Que ficheros leer. Por defecto los de la Pi; con "pc" los del colector de esta maquina.
+#   ⚠ NO se mezclan nunca: las columnas ask0/52/100/200 dependen de la LATENCIA de quien mide, y
+#   juntar dos maquinas es el sesgo que ya nos mordio dos veces. Pero los plazos de 300 y 400 ms
+#   SOLO existen en los del PC, y como el bot corre AQUI, para la pregunta "cuanto nos llenan a
+#   NUESTRA latencia" los del PC son los correctos, no una contaminacion.
+LLEG = []
+PREFIJO = "pcpaper" if "pc" in sys.argv[1:] else "stalepaper"
+
+
 def carga():
     R = []
-    for p in sorted(glob.glob(os.path.join(DIR, "stalepaper*.csv"))):
+    for p in sorted(glob.glob(os.path.join(DIR, f"{PREFIJO}*.csv"))):
         if "_tarde" in os.path.basename(p): continue     # el tarde NO son disparos, ver regimen.py
         with open(p, encoding="utf-8") as fh: R.extend(csv.DictReader(fh))
-    return [r for r in R if r.get("trig") == TRIGID]
+    R = [r for r in R if r.get("trig") == TRIGID]
+    print(f"leyendo {PREFIJO}*.csv" + ("   (colector de ESTE PC)" if PREFIJO == "pcpaper" else
+                                       "   (rescatados de la Pi · usa 'pc' para los de aqui)"))
+    return R
+
+
+def llegadas(R):
+    """Plazos de llegada que REALMENTE se pueden medir con las columnas que hay."""
+    hay = set().union(*(set(r) for r in R[:50])) if R else set()
+    return [k for k in (52, 100, 200, 300, 400) if f"ask{k}" in hay]
 
 
 def num(r, k):
@@ -76,6 +94,9 @@ def main():
     print(f"disparos del disparador actual: {len(R)}")
     if len(R) < 500:
         print("muestra corta — dejar acumular"); return
+    global LLEG
+    LLEG = llegadas(R)
+    print(f"plazos de llegada medibles: {LLEG} ms")
     RES = _resol({int(r["ws"]) for r in R if r.get("ws")})
 
     filas = []
@@ -84,10 +105,10 @@ def main():
         if m is None: continue
         try: t = float(r["ts_salto"])
         except Exception: continue
-        asks = {k: num(r, f"ask{k}") for k in (0, 52, 100, 200)}
+        asks = {k: num(r, f"ask{k}") for k in [0] + LLEG}
         if asks[0] is None: continue
         szs = {}
-        for k in (0, 52, 100, 200):
+        for k in [0] + LLEG:
             try: szs[k] = float(r[f"sz{k}"])
             except Exception: szs[k] = 0.0
         w = RES.get(int(r["ws"])) if r.get("ws") else None
@@ -103,7 +124,7 @@ def main():
         print(f"  {'límite':>10}{'llega':>8}{'% relleno':>11}{'MEC si LLENA':>17}"
               f"{'MEC si NO llena':>18}{'RESOL si LLENA':>18}")
         for lim_k, extra in ((0, 0.0), (0, TICK), (52, 0.0)):
-            for arr in (52, 100, 200):
+            for arr in LLEG:
                 if arr <= lim_k: continue
                 si_m, no_m, si_r, pagados, cortos = [], [], [], [], 0
                 for f in v:
