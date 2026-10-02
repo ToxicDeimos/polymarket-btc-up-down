@@ -18,7 +18,7 @@ Si pasa, es que algo esta roto.
 
     python vigila.py          # se queda en primer plano supervisando
 """
-import subprocess, time, os, sys, datetime
+import subprocess, time, os, sys, datetime, socket
 
 DIR  = os.path.dirname(os.path.abspath(__file__))
 CSV  = os.path.join(DIR, "pcpaper_v4.csv")
@@ -49,7 +49,22 @@ def arranca():
     return p
 
 
+def candado():
+    """Instancia unica. Dos supervisores = dos colectores escribiendo al MISMO csv, intercalando
+    filas a medias. Un socket sirve de cerrojo y el sistema lo suelta solo si el proceso muere,
+    asi que no deja cerrojos huerfanos como haria un fichero."""
+    s = socket.socket()
+    try:
+        s.bind(("127.0.0.1", 47321))
+    except OSError:
+        print("ya hay un supervisor en marcha, no arranco otro", flush=True)
+        raise SystemExit(0)
+    s.listen(1)
+    return s                                  # hay que conservarlo vivo
+
+
 def main():
+    cerrojo = candado()                       # noqa: F841  (si se recoge, se suelta el puerto)
     apunta("supervisor en marcha")
     p = arranca()
     visto, ultimo = tam(), time.time()
