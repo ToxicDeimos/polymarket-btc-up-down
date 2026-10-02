@@ -210,12 +210,19 @@ def manda_orden(token_id, precio, tick, neg_risk, n):
         options=PartialCreateOrderOptions(tick_size=tick, neg_risk=neg_risk),
         order_type=OrderType.FAK)
     d = r if isinstance(r, dict) else getattr(r, "__dict__", {"resp": str(r)})
-    # Los nombres de estos campos son una SUPOSICION: nunca hemos visto una respuesta buena. Por eso se
-    # devuelve tambien la respuesta cruda: la primera orden que entre nos ensenara el formato real.
+    # Formato REAL, visto por fin el 2-oct-2026 en el primer relleno:
+    #   {'errorMsg': '', 'orderID': '0x…', 'takingAmount': '5', 'makingAmount': '2.9',
+    #    'status': 'matched', 'transactionsHashes': ['0x…'], 'success': True}
+    # takingAmount = acciones recibidas · makingAmount = USDC pagados. NO hay campo 'price':
+    # lo adiviné y el contador caía al respaldo size*ask, que aquel dia coincidio por suerte.
+    # makingAmount es el dato bueno para el gasto, porque es lo que de verdad salio de la cuenta.
     size = d.get("takingAmount") or d.get("size_matched") or d.get("sizeMatched") or ""
-    return (d.get("status") or d.get("success") or "?", size,
-            d.get("price") or "", d.get("orderID") or d.get("order_id") or "",
-            d.get("errorMsg") or "", str(d)[:400])
+    pagado = d.get("makingAmount")                      # None si no viene: ahi NO se puede suponer 0
+    try: px = round(float(pagado) / float(size), 4) if (pagado and size) else ""
+    except Exception: px = ""
+    return (d.get("status") or d.get("success") or "?", size, px,
+            d.get("orderID") or d.get("order_id") or "",
+            d.get("errorMsg") or "", str(d)[:400], pagado)
 
 
 def ventana(ws, mk):
@@ -287,7 +294,8 @@ def ventana(ws, mk):
         # saldo suficiente para tener esos ms_envio.
         t0 = time.time()
         try:
-            est, size, px, oid, err, crudo = manda_orden(toks[tok], ask, mk["tick"], mk["neg_risk"], n)
+            est, size, px, oid, err, crudo, pagado = manda_orden(toks[tok], ask, mk["tick"],
+                                                                  mk["neg_risk"], n)
         except Exception as e:
             ms = round(1000 * (time.time() - t0), 1); txt = str(e)
             # Un FAK sin contraparte es un NO rotundo del propio CLOB: no se compro nada, no se gasto
@@ -307,13 +315,16 @@ def ventana(ws, mk):
             return
         ms = round(1000 * (time.time() - t0), 1)
         DIA["ordenes"] += 1
-        # 🔒 Si no sabemos cuanto se lleno (campos mal adivinados -> size vacio -> 0), NO se puede sumar 0:
-        # el tope de gasto dejaria de morder y el bot operaria sin limite. Ante la duda, lo peor posible.
-        try:
-            gastado = float(size) * float(px or ask)
-        except Exception:
-            gastado = coste
-        if not (gastado > 0): gastado = coste
+        # makingAmount son los USDC que REALMENTE salieron de la cuenta: si viene, manda, aunque sea 0
+        # (un 0 explicito es "no se lleno nada", informacion buena). Si NO viene, no se puede suponer
+        # cero -> el tope dejaria de morder. 🔒 Ante la duda, lo peor posible.
+        if pagado is not None:
+            try: gastado = float(pagado)
+            except Exception: gastado = coste
+        else:
+            try: gastado = float(size) * float(px or ask)
+            except Exception: gastado = coste
+            if not (gastado > 0): gastado = coste
         DIA["gasto"] += gastado
         apunta(base + ["real", ms, est, size, px, oid, err, crudo])
         print(f"   [real] {tok} pedido {n}@{ask} → {est} size={size} en {ms:.0f}ms · "
