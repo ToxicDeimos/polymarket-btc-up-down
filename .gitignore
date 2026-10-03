@@ -13,6 +13,16 @@ __pycache__/
 venv/
 .venv/
 
+# Datos de research: NUNCA al repo. Son grandes, crecen solos y se respaldan aparte
+# (respaldo_pi.sh). El 3-oct un `git add -A research/` colo 145.000 lineas y un pickle de
+# 3,8 MB; el historial ya no se puede limpiar sin reescribirlo, asi que mejor que no entren.
+research/*.csv
+research/rescate/
+research/lab/
+research/*.out
+research/*.err
+research/*.log
+
 # Datos generados en runtime (no son código fuente)
 results.csv
 results_*.csv          # archivos históricos (pre_fade, pre_volfix, ...) — viven en la Pi
