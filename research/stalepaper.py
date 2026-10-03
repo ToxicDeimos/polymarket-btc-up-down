@@ -147,7 +147,7 @@ def write(row):
     with LOCK:
         if os.path.exists(LOG):
             try:
-                with open(LOG, encoding="utf-8") as f: vieja = next(csv.reader(f), [])
+                with open(LOG, encoding="utf-8", errors="replace") as f: vieja = next(csv.reader(f), [])
             except Exception: vieja = []
             if vieja and vieja != H:
                 os.rename(LOG, LOG.replace(".csv", time.strftime("_%Y%m%d%H%M%S.csv")))
@@ -163,7 +163,7 @@ def escribe_tarde(row):
         # misma cautela que write(): si la cabecera cambio, el fichero viejo se APARTA, no se pisa.
         if os.path.exists(LOG_TARDE):
             try:
-                with open(LOG_TARDE, encoding="utf-8") as f: vieja = next(csv.reader(f), [])
+                with open(LOG_TARDE, encoding="utf-8", errors="replace") as f: vieja = next(csv.reader(f), [])
             except Exception: vieja = []
             if vieja and vieja != H_TARDE:
                 os.rename(LOG_TARDE, LOG_TARDE.replace(".csv", time.strftime("_%Y%m%d%H%M%S.csv")))
@@ -328,6 +328,10 @@ _RESCACHE = os.path.join(DIR, "lab", "clob_reso_paper.csv")
 
 
 def _resol(wss):
+    # ⚠ TODAS las lecturas van con errors="replace". Un fichero del laboratorio quedo con bytes
+    # no-UTF8 tras el rescate de la SD muerta, y eso tumbaba el analisis ENTERO con un
+    # UnicodeDecodeError: regimen, fillsel, asienta, salida y botlog, todos, por un byte. Con
+    # datos recuperados de un disco roto hay que leer lo legible y seguir, no abortar.
     """ws -> ganador. Puente ws->cid por los books del laboratorio; lo que falte se pide al CLOB."""
     ws2cid = {}
     # Rescatados del disco muerto de la Pi. Van PRIMERO para que los books del laboratorio, si estan,
@@ -336,12 +340,12 @@ def _resol(wss):
     # el enlace ventana->mercado de una ventana pasada no se puede reconstruir pidiendoselo a nadie.
     resc = os.path.join(DIR, "rescate", "ws2cid.csv")
     if os.path.exists(resc):
-        for r in csv.DictReader(open(resc, encoding="utf-8")):
+        for r in csv.DictReader(open(resc, encoding="utf-8", errors="replace")):
             try: w = int(r["ws"])
             except Exception: continue
             if w in wss: ws2cid[w] = r["cid"]
     for path in sorted(glob.glob(os.path.join(DIR, "lab", "books_*.csv"))):
-        with open(path, encoding="utf-8") as fh:
+        with open(path, encoding="utf-8", errors="replace") as fh:
             rd = csv.reader(fh); next(rd, None)
             for row in rd:
                 if len(row) < 3 or not row[1].startswith(MERCADO + "-"): continue
@@ -358,7 +362,7 @@ def _resol(wss):
     for fn in ("clob_reso_paper.csv", "clob_reso_stale.csv", "clob_reso_mmtoxic.csv"):
         fp = os.path.join(DIR, "lab", fn)
         if os.path.exists(fp):
-            for r in csv.DictReader(open(fp, encoding="utf-8")):
+            for r in csv.DictReader(open(fp, encoding="utf-8", errors="replace")):
                 if r.get("winner"): reso[r["cid"]] = r["winner"]
     falta = [w for w in wss if w in ws2cid and ws2cid[w] not in reso]
     print(f"  resoluciones: {len(wss)-len(falta)} listas, {len(falta)} por pedir", flush=True)
@@ -383,7 +387,7 @@ def analizar():
     R = []
     for p in sorted(glob.glob(os.path.join(DIR, "stalepaper*.csv"))):
         n0 = len(R)
-        with open(p, encoding="utf-8") as fh: R.extend(csv.DictReader(fh))
+        with open(p, encoding="utf-8", errors="replace") as fh: R.extend(csv.DictReader(fh))
         print(f"  {os.path.basename(p)}: {len(R) - n0} disparos")
     if not R: print("aún no hay disparos"); return
     print(f"disparos anotados: {len(R)}")

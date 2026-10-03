@@ -61,12 +61,12 @@ def actividad(filas):
 def main():
     tarde = {}
     for p in sorted(glob.glob(os.path.join(DIR, f"{PREFIJO}_tarde*.csv"))):
-        for r in csv.DictReader(open(p, encoding="utf-8")):
+        for r in csv.DictReader(open(p, encoding="utf-8", errors="replace")):
             if r.get("trig") == TRIGID: tarde[r["ts_salto"]] = r
     R = []
     for p in sorted(glob.glob(os.path.join(DIR, f"{PREFIJO}*.csv"))):
         if "_tarde" in os.path.basename(p): continue
-        R += [r for r in csv.DictReader(open(p, encoding="utf-8")) if r.get("trig") == TRIGID]
+        R += [r for r in csv.DictReader(open(p, encoding="utf-8", errors="replace")) if r.get("trig") == TRIGID]
     print(f"serie {PREFIJO} · {len(R)} disparos · {len(tarde)} con plazos largos")
     if not R or not tarde: print("sin datos suficientes"); return
 
@@ -133,6 +133,6 @@ def main():
 
 
 if __name__ == "__main__":
-    try: sys.stdout.reconfigure(encoding="utf-8")
+    try: sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     except Exception: pass
     main()

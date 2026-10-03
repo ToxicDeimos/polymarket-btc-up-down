@@ -54,7 +54,7 @@ def carga():
     R = []
     for p in sorted(glob.glob(os.path.join(DIR, f"{PREFIJO}*.csv"))):
         if "_tarde" in os.path.basename(p): continue     # el tarde NO son disparos, ver regimen.py
-        with open(p, encoding="utf-8") as fh: R.extend(csv.DictReader(fh))
+        with open(p, encoding="utf-8", errors="replace") as fh: R.extend(csv.DictReader(fh))
     R = [r for r in R if r.get("trig") == TRIGID]
     print(f"leyendo {PREFIJO}*.csv" + ("   (colector de ESTE PC)" if PREFIJO == "pcpaper" else
                                        "   (rescatados de la Pi · usa 'pc' para los de aqui)"))
@@ -173,6 +173,6 @@ def main():
 
 
 if __name__ == "__main__":
-    try: sys.stdout.reconfigure(encoding="utf-8")
+    try: sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     except Exception: pass
     main()

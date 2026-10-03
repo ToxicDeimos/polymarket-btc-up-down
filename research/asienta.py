@@ -70,7 +70,7 @@ def main():
 
     tarde = {}
     for p in sorted(glob.glob(os.path.join(DIR, "stalepaper_tarde*.csv"))):
-        for r in csv.DictReader(open(p, encoding="utf-8")):
+        for r in csv.DictReader(open(p, encoding="utf-8", errors="replace")):
             if r.get("trig") != TRIGID: continue
             tarde[r["ts_salto"]] = r          # las versiones viejas no traen spot: se usan igual en (a) y (b)
 
@@ -79,7 +79,7 @@ def main():
         # excluir por NOMBRE, no solo el LOG_TARDE exacto: al rotar la cabecera quedan
         # stalepaper_tarde_2026....csv, que casan con el glob igual.
         if "_tarde" in os.path.basename(p): continue
-        with open(p, encoding="utf-8") as fh: R.extend(csv.DictReader(fh))
+        with open(p, encoding="utf-8", errors="replace") as fh: R.extend(csv.DictReader(fh))
     R = [r for r in R if r.get("trig") == TRIGID]
     print(f"disparos del disparador actual: {len(R)} · con plazos largos: {len(tarde)}")
 
@@ -215,6 +215,6 @@ def main():
 
 
 if __name__ == "__main__":
-    try: sys.stdout.reconfigure(encoding="utf-8")
+    try: sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     except Exception: pass
     main()

@@ -36,7 +36,7 @@ def carga():
         # plazos largos. Sus filas se caian solas al faltarles ask52, pero por una excepcion, no por
         # diseno: si manana el tarde llevara un ask52, entrarian sin que nadie se enterase.
         if "_tarde" in os.path.basename(p): continue
-        with open(p, encoding="utf-8") as fh: R.extend(csv.DictReader(fh))
+        with open(p, encoding="utf-8", errors="replace") as fh: R.extend(csv.DictReader(fh))
     return [r for r in R if r.get("trig") == TRIGID]
 
 
@@ -157,6 +157,6 @@ def main():
 
 
 if __name__ == "__main__":
-    try: sys.stdout.reconfigure(encoding="utf-8")
+    try: sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     except Exception: pass
     main()
