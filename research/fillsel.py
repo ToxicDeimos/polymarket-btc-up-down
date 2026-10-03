@@ -41,7 +41,13 @@ MAX_ACT = 102          # el primer cuartil causal (regimen.py D)
 #   SOLO existen en los del PC, y como el bot corre AQUI, para la pregunta "cuanto nos llenan a
 #   NUESTRA latencia" los del PC son los correctos, no una contaminacion.
 LLEG = []
-PREFIJO = "pcpaper" if "pc" in sys.argv[1:] else "stalepaper"
+# El primer argumento elige QUE serie analizar. Nunca se mezclan: cada prefijo es un instrumento
+# o un mercado distinto (5m de la Pi, 5m del PC, 15m...), y juntarlos es el sesgo de siempre.
+#     python3 fillsel.py            -> stalepaper (5m de esta maquina)
+#     python3 fillsel.py paper15    -> el mercado de 15m
+#     python3 fillsel.py pc         -> lo recogido en el PC
+ALIAS = {"pc": "pcpaper", "15m": "paper15", "5m": "stalepaper"}
+PREFIJO = ALIAS.get(sys.argv[1], sys.argv[1]) if len(sys.argv) > 1 else "stalepaper"
 
 
 def carga():

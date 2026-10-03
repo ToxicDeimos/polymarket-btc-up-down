@@ -96,7 +96,10 @@ def snapcol(k): return round(k * 1000)      # 0.052 -> 52, igual que los nombres
 
 # La cabecera se GENERA de MVW y de SNAPS. Tenerlas a mano ya me dejo el analisis ciego dos veces,
 # y las latencias estaban escritas a mano aqui mismo mientras SNAPS iba por su cuenta.
-H = (["ts_salto", "ws", "tok", "salto", "react_ms", "trig"]
+# "cid" = conditionId. Sin el, pasadas unas horas NO se puede resolver una ventana: Gamma solo
+# devuelve mercados recientes y el puente ws->cid del laboratorio murio con la Pi. Lo sabemos
+# porque le paso exactamente eso a stalebot y nos dejo 10 compras reales sin resolver.
+H = (["ts_salto", "ws", "tok", "cid", "salto", "react_ms", "trig"]
      + [c for k in SNAPS for c in (f"ask{snapcol(k)}", f"sz{snapcol(k)}")]
      + ["mid8s", "spread0", "oask52", "osz52", "omid8s"]   # o* = token CONTRARIO (espejo)
      + [mvcol(w) for w in MVW])
@@ -202,7 +205,7 @@ def run_window(ws, mk):
 
     def disparo(t0, tok, salto, react, movs):
         """anota el libro a cada latencia y el medio asentado; NO opera."""
-        row = [round(t0, 3), ws, tok, round(salto, 1), round(1000 * react, 1), TRIGID]
+        row = [round(t0, 3), ws, tok, mk.get("cid", ""), round(salto, 1), round(1000 * react, 1), TRIGID]
         got = {}
         ogot = {}
         def toma(k):

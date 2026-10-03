@@ -23,13 +23,15 @@ saldo contado es justo lo que interesa.
 import csv, os, sys, glob, time, statistics as st
 
 DIR = os.path.dirname(os.path.abspath(__file__))
+ALIAS = {"pc": "pcpaper", "15m": "paper15", "5m": "stalepaper"}
+PREFIJO = ALIAS.get(sys.argv[1], sys.argv[1]) if len(sys.argv) > 1 else "stalepaper"
 sys.path.insert(0, DIR)
 from stalepaper import fee, _resol, TRIGID      # noqa: E402  (mismo criterio que el analisis del papel)
 
 
 def carga():
     R = []
-    for p in sorted(glob.glob(os.path.join(DIR, "stalepaper*.csv"))):
+    for p in sorted(glob.glob(os.path.join(DIR, f"{PREFIJO}*.csv"))):
         # "stalepaper*" tambien casa con stalepaper_tarde.csv, que NO son disparos sino medios a
         # plazos largos. Sus filas se caian solas al faltarles ask52, pero por una excepcion, no por
         # diseno: si manana el tarde llevara un ask52, entrarian sin que nadie se enterase.
