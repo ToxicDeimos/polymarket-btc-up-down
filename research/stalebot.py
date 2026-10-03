@@ -96,9 +96,13 @@ MIN_PRICE = 0.05
 MAX_SPEND_DAY = float(os.environ.get("STALEBOT_MAX_SPEND", "25"))
 MAX_ORDERS_DAY = int(os.environ.get("STALEBOT_MAX_ORDERS", "200"))
 
-H = ["ts", "ws", "tok", "token_id", "ttc", "ask_visto", "tam_visto", "precio_pedido", "size_pedido",
-     "actividad", "modo", "ms_envio", "estado", "size_llenado", "precio_medio", "order_id", "error",
-     "respuesta_cruda"]
+# "cid" = conditionId del mercado. Lo conocemos al descubrir la ventana y NO lo guardabamos: sin el,
+# pasadas unas horas no hay forma de resolver nuestras propias operaciones, porque Gamma solo devuelve
+# mercados recientes y el puente ws->cid del laboratorio ya no existe. Sin resolver no hay margen
+# realizado, y el margen realizado es LO UNICO que decide si esto paga.
+H = ["ts", "ws", "tok", "token_id", "cid", "ttc", "ask_visto", "tam_visto", "precio_pedido",
+     "size_pedido", "actividad", "modo", "ms_envio", "estado", "size_llenado", "precio_medio",
+     "order_id", "error", "respuesta_cruda"]
 LOCK = threading.Lock()
 LIVE = "--live" in sys.argv and os.environ.get("STALEBOT_LIVE") == "yes"
 DIA = {"fecha": None, "gasto": 0.0, "ordenes": 0}
@@ -299,7 +303,7 @@ def ventana(ws, mk):
         n = cuantas(ask)
         coste = ask * n
         motivo = puedo_gastar(coste)
-        base = [round(t, 3), ws, tok, toks[tok], round(ttc, 1), ask, round(tam),
+        base = [round(t, 3), ws, tok, toks[tok], mk.get("cid", ""), round(ttc, 1), ask, round(tam),
                 ask, n, round(tasa(t))]
         if motivo:
             apunta(base + ["bloqueado", "", motivo, "", "", "", "", ""]); return

@@ -119,6 +119,61 @@ def main():
             print(f"    {k:<14} {prim.get(k)}")
         print(f"    respuesta_cruda  {str(prim.get('respuesta_cruda'))[:300]}")
 
+    realizado(R)
+
+
+def realizado(R):
+    """E) EL MARGEN REALIZADO: lo único que decide si esto paga.
+
+    Ni el relleno ni la latencia contestan la pregunta. Un 7% de relleno con margen bueno es un
+    negocio; un 80% con margen cero no lo es. Y no vale apoyarse en `fillsel` para estimarlo: su
+    modelo predecía 35-40% de relleno donde la realidad da 7%, así que si falla en QUIÉN se llena,
+    también falla en CUÁNTO vale lo que se llena.
+
+    Esto lo mide de la única forma que no admite discusión: con el resultado de nuestras compras.
+    """
+    import re
+    print("\n" + "=" * 72)
+    print("  E) MARGEN REALIZADO DE LAS COMPRAS")
+    print("=" * 72)
+    lle = [r for r in R if (r.get("estado") or "") == "matched" and r.get("cid")]
+    sincid = sum(1 for r in R if (r.get("estado") or "") == "matched" and not r.get("cid"))
+    if sincid:
+        print(f"  ⚠ {sincid} rellenos SIN conditionId (anteriores al arreglo): no se pueden resolver.")
+    if not lle:
+        print("  todavía no hay rellenos con cid. Cada uno tarda ≤5 min en resolverse.")
+        print("  Con ~7 al día, en dos semanas son ~100, que dan el margen a ±5 puntos.")
+        return
+    try:
+        from stalepaper import get, fee
+    except Exception:
+        print("  no se pudo importar stalepaper"); return
+    net, apost, gan = [], 0.0, 0
+    for r in lle:
+        d = get(f"https://clob.polymarket.com/markets/{r['cid']}") or {}
+        w = next((t.get("outcome") for t in d.get("tokens", []) if t.get("winner") is True), None)
+        if w is None: continue
+        m = re.search(r"'makingAmount': '([\d.]+)'", r.get("respuesta_cruda") or "")
+        try:
+            n = float(r["size_llenado"]); pag = float(m.group(1)) if m else n * float(r["ask_visto"])
+        except Exception: continue
+        cobro = n if w == r["tok"] else 0.0
+        net.append((cobro - pag) / pag)          # retorno sobre lo apostado
+        apost += pag; gan += (w == r["tok"])
+    if len(net) < 5:
+        print(f"  solo {len(net)} resueltas, aún no dice nada"); return
+    import statistics as st
+    m = st.mean(net); e = st.pstdev(net) / len(net) ** 0.5
+    print(f"  {len(net)} compras resueltas · ganadas {gan} ({100*gan/len(net):.0f}%)")
+    print(f"  apostado {apost:.2f}$ · resultado neto {sum(n*apost/len(net) for n in net):+.2f}$")
+    print(f"\n  MARGEN POR OPERACIÓN: {100*m:+.2f}% ± {100*e:.2f}")
+    print(f"  (la hipótesis 'margen cero' {'NO se descarta' if abs(m) < 2*e else 'SE DESCARTA'})")
+    if e > 0:
+        falta = int(len(net) * (e / 0.025) ** 2) - len(net)
+        if falta > 0:
+            print(f"  para bajar el error a ±2,5 puntos faltan ~{falta} operaciones "
+                  f"({falta/7.4:.0f} días al ritmo actual)")
+
 
 if __name__ == "__main__":
     try: sys.stdout.reconfigure(encoding="utf-8")
