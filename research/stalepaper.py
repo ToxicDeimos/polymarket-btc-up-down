@@ -35,6 +35,13 @@ DIR = os.path.dirname(__file__)
 # NO son comparables con las de la Pi. Asi que escribe a ficheros con su propio prefijo y que cada
 # analisis decida si los quiere. Mezclarlos en silencio seria el mismo sesgo que ya nos mordio dos veces.
 #     STALEPAPER_PREFIJO=pcpaper python3 stalepaper.py
+# Ventana del mercado. El 15m existe con el mismo patron de slug y el mismo tick, y es una
+# hipotesis con mecanismo: menos competencia por la cotizacion rancia y MENOS urgencia por
+# recotizar (un salto de 5$ mueve mucho menos la probabilidad a 15 min que a 5), lo cual ataca
+# justo nuestro 7% de relleno. En contra: por lo mismo, el margen tambien deberia ser menor.
+#     STALEPAPER_VENTANA=900 STALEPAPER_PREFIJO=paper15 python3 stalepaper.py
+VENTANA = int((os.environ.get("STALEPAPER_VENTANA") or "300").strip())
+MERCADO = f"btc-updown-{VENTANA // 60}m"
 PREFIJO = (os.environ.get("STALEPAPER_PREFIJO") or "stalepaper").strip()
 LOG = os.path.join(DIR, f"{PREFIJO}_v4.csv")
 # Medio del libro a plazos LARGOS, para ver si a los 8 s ha terminado de recotizar o sigue.
@@ -109,7 +116,7 @@ def get(url, tries=2, timeout=6):
 
 
 def discover(ws):
-    d = get(f"https://gamma-api.polymarket.com/markets?slug=btc-updown-5m-{ws}")
+    d = get(f"https://gamma-api.polymarket.com/markets?slug={MERCADO}-{ws}")
     if not (isinstance(d, list) and d): return None
     m = d[0]
     try:
@@ -153,7 +160,7 @@ def escribe_tarde(row):
 
 def run_window(ws, mk):
     toks = mk["toks"]; id2 = {toks["Up"]: "Up", toks["Down"]: "Down"}
-    close = ws + 300
+    close = ws + VENTANA
     bk = {"Up": [None, None, 0.0], "Down": [None, None, 0.0]}   # [bid, ask, tam del ask]
     lv = {"Up": {}, "Down": {}}
     hist = []                                                    # (ts, precio BTC)
@@ -287,8 +294,8 @@ def vivo():
           flush=True)
     try:
         while True:
-            t = time.time(); ws = int(t - (t % 300))
-            if t - ws > 270: time.sleep(300 - (t - ws) + 1); continue
+            t = time.time(); ws = int(t - (t % VENTANA))
+            if t - ws > VENTANA - 30: time.sleep(VENTANA - (t - ws) + 1); continue
             mk = discover(ws)
             if not mk: time.sleep(15); continue
             run_window(ws, mk)
@@ -307,14 +314,30 @@ _RESCACHE = os.path.join(DIR, "lab", "clob_reso_paper.csv")
 def _resol(wss):
     """ws -> ganador. Puente ws->cid por los books del laboratorio; lo que falte se pide al CLOB."""
     ws2cid = {}
+    # Rescatados del disco muerto de la Pi. Van PRIMERO para que los books del laboratorio, si estan,
+    # los pisen. ⚠ Sin esto no hay columna de resolucion fuera de la Pi: Gamma solo devuelve mercados
+    # RECIENTES (probado con ventanas del 25-sep, 28-sep y 01-oct: las tres vuelven vacias), asi que
+    # el enlace ventana->mercado de una ventana pasada no se puede reconstruir pidiendoselo a nadie.
+    resc = os.path.join(DIR, "rescate", "ws2cid.csv")
+    if os.path.exists(resc):
+        for r in csv.DictReader(open(resc, encoding="utf-8")):
+            try: w = int(r["ws"])
+            except Exception: continue
+            if w in wss: ws2cid[w] = r["cid"]
     for path in sorted(glob.glob(os.path.join(DIR, "lab", "books_*.csv"))):
         with open(path, encoding="utf-8") as fh:
             rd = csv.reader(fh); next(rd, None)
             for row in rd:
-                if len(row) < 3 or not row[1].startswith("btc-updown-5m-"): continue
+                if len(row) < 3 or not row[1].startswith(MERCADO + "-"): continue
                 try: w = int(row[1].split("-")[-1])
                 except Exception: continue
                 if w in wss and w not in ws2cid: ws2cid[w] = row[2]
+    # ⚠ NO intentar carvar los GANADORES del disco buscando "0x<cid>,(Up|Down)". Se probo y sale una
+    # moneda al aire: 4 aciertos de 8 contra el CLOB, con sesgo a "Up" porque lo que caza es el primer
+    # elemento de la lista ["Up","Down"] de cualquier fichero que mencione el mercado, no el ganador.
+    # Y el fallo es TRAICIONERO: la columna de resolucion se llena entera y da -5pp en todos los
+    # cajones, que es exactamente 0,5 - precio - comision, o sea el valor de acertar al azar.
+    # El puente ws->cid si se puede carvar (validado 8/8); el ganador se le pide al CLOB y punto.
     reso = {}
     for fn in ("clob_reso_paper.csv", "clob_reso_stale.csv", "clob_reso_mmtoxic.csv"):
         fp = os.path.join(DIR, "lab", fn)
@@ -494,7 +517,7 @@ def analizar():
         v = []
         for r in cur:
             try:
-                ttc = int(r["ws"]) + 300 - float(r["ts_salto"])
+                ttc = int(r["ws"]) + VENTANA - float(r["ts_salto"])
                 a = float(r["ask52"]); m = float(r["mid8s"])
             except Exception: continue
             if not (lo <= ttc < hi and 0 < a < 1 and 0 < m < 1): continue
