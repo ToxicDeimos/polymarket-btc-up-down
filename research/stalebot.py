@@ -107,6 +107,7 @@ LOCK = threading.Lock()
 LIVE = "--live" in sys.argv and os.environ.get("STALEBOT_LIVE") == "yes"
 DIA = {"fecha": None, "gasto": 0.0, "ordenes": 0}
 CLIENT = [None]
+avisado = [False]     # el aviso de tope agotado se da UNA vez, no una por deteccion
 
 
 def get(url, tries=2, timeout=6):
@@ -306,6 +307,12 @@ def ventana(ws, mk):
         base = [round(t, 3), ws, tok, toks[tok], mk.get("cid", ""), round(ttc, 1), ask, round(tam),
                 ask, n, round(tasa(t))]
         if motivo:
+            # 🔇 Otra puerta muda: al agotarse el tope el bot dejaba de operar sin decir nada y
+            # parecia que se habia quedado sordo. Se avisa UNA vez (no una por deteccion).
+            if not avisado[0]:
+                avisado[0] = True
+                print(f"   🛑 {motivo} · gastado {DIA['gasto']:.2f}$ en {DIA['ordenes']} ordenes. "
+                      f"Sigue vigilando pero YA NO OPERA — relanzar para otra tanda.", flush=True)
             apunta(base + ["bloqueado", "", motivo, "", "", "", "", ""]); return
         if not LIVE:
             apunta(base + ["simulado", "", "no enviado", "", "", "", "", ""])
