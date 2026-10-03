@@ -40,9 +40,22 @@ DIR = os.path.dirname(__file__)
 # recotizar (un salto de 5$ mueve mucho menos la probabilidad a 15 min que a 5), lo cual ataca
 # justo nuestro 7% de relleno. En contra: por lo mismo, el margen tambien deberia ser menor.
 #     STALEPAPER_VENTANA=900 STALEPAPER_PREFIJO=paper15 python3 stalepaper.py
-VENTANA = int((os.environ.get("STALEPAPER_VENTANA") or "300").strip())
+def _arg(nombre, pordefecto):
+    """Lee --nombre VALOR de la linea de comandos; si no esta, la variable de entorno.
+    ⚠ Preferir el ARGUMENTO no es cosmetico: una variable de entorno NO aparece en `ps`, asi que
+    dos colectores de mercados distintos se ven identicos ("python3 stalepaper.py") y no hay forma
+    de matar el correcto. Paso exactamente eso: un `pkill -f STALEPAPER_VENTANA=900` no encontro
+    nada, quedaron DOS colectores de 15m escribiendo al mismo csv, y hubo que mirar
+    /proc/PID/environ para distinguirlos. Con el argumento, un `pgrep -af` los separa a simple vista."""
+    if f"--{nombre}" in sys.argv:
+        i = sys.argv.index(f"--{nombre}")
+        if i + 1 < len(sys.argv): return sys.argv[i + 1]
+    return (os.environ.get(f"STALEPAPER_{nombre.upper()}") or pordefecto).strip()
+
+
+VENTANA = int(_arg("ventana", "300"))
 MERCADO = f"btc-updown-{VENTANA // 60}m"
-PREFIJO = (os.environ.get("STALEPAPER_PREFIJO") or "stalepaper").strip()
+PREFIJO = _arg("prefijo", "stalepaper")
 LOG = os.path.join(DIR, f"{PREFIJO}_v4.csv")
 # Medio del libro a plazos LARGOS, para ver si a los 8 s ha terminado de recotizar o sigue.
 TARDE = (15.0, 30.0, 60.0, 120.0)
