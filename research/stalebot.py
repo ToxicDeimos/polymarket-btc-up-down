@@ -244,7 +244,7 @@ def ventana(ws, mk):
     bk = {"Up": [None, None, 0.0], "Down": [None, None, 0.0]}
     lv = {"Up": {}, "Down": {}}
     hist = []; ultimo = [0.0]; hecho = [False]; dicho = [False]   # dicho: ya avisamos en esta ventana
-    ndet = [0]; sinlibro = [0]                   # detecciones de ESTA ventana / descartadas sin libro
+    ndet = [0]; sinlibro = [0]; nticks = [0]    # detecciones / descartadas sin libro / ticks de spot
 
     # ⛔ Antes aqui se calentaba la CONEXION con un get_ok(). Medido y NO servia: 402 ms de mediana
     # sin calentar (n=8), 401 calentando (n=9). Lo que habia que calentar era otra cosa.
@@ -363,6 +363,10 @@ def ventana(ws, mk):
 
     def on_spot(w, msg):
         t = time.time()
+        # Se cuenta ANTES de cualquier filtro: un tick recibido demuestra que el feed VIVE, aunque
+        # BTC este plano y no dispare nada. Sin esto el vigilante confunde "mercado tranquilo" con
+        # "feed muerto" y apagaria el bot de madrugada por las buenas.
+        nticks[0] += 1
         # El enfriamiento va sobre la ULTIMA DETECCION, no sobre la ultima orden: hay que seguir contando
         # aunque ya hayamos operado en esta ventana, porque la actividad se mide igual que en el papel.
         if t - ultimo[0] < COOL: return
@@ -420,15 +424,20 @@ def ventana(ws, mk):
     threading.Thread(target=lambda: sapp.run_forever(ping_interval=20, ping_timeout=10), daemon=True).start()
     while time.time() < close - 5: time.sleep(0.4)
     app.close(); sapp.close()
-    # Sordo es tanto no detectar (Binance mudo) como detectar y no tener libro (Polymarket mudo).
-    util = ndet[0] > 0 and sinlibro[0] < ndet[0]
-    VACIAS[0] = 0 if util else VACIAS[0] + 1
-    if not ndet[0]:
-        print(f"   ⚠ ventana SIN NINGUNA deteccion ({VACIAS[0]}/{MAX_VACIAS}) — "
-              f"BTC plano del todo, o el feed de BINANCE mudo", flush=True)
-    elif sinlibro[0] >= ndet[0]:
+    # SORDO no es lo mismo que TRANQUILO, y confundirlos apaga el bot de madrugada:
+    #   · 0 ticks de spot            -> el feed de Binance esta muerto           -> SORDO
+    #   · ticks pero 0 detecciones   -> BTC plano, todo correcto                 -> normal
+    #   · detecciones sin libro      -> el feed de Polymarket esta muerto        -> SORDO
+    mudo = (nticks[0] == 0) or (ndet[0] > 0 and sinlibro[0] >= ndet[0])
+    VACIAS[0] = VACIAS[0] + 1 if mudo else 0
+    if nticks[0] == 0:
+        print(f"   ⚠ ventana sin UN SOLO tick de Binance ({VACIAS[0]}/{MAX_VACIAS}) — feed muerto",
+              flush=True)
+    elif ndet[0] and sinlibro[0] >= ndet[0]:
         print(f"   ⚠ {ndet[0]} detecciones y NINGUNA con libro ({VACIAS[0]}/{MAX_VACIAS}) — "
               f"el feed de POLYMARKET esta mudo", flush=True)
+    elif not ndet[0]:
+        print(f"   (sin disparos: {nticks[0]} ticks, BTC plano — el feed va bien)", flush=True)
     elif sinlibro[0]:
         print(f"   ({sinlibro[0]} de {ndet[0]} detecciones sin libro)", flush=True)
 
