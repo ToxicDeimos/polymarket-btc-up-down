@@ -101,7 +101,8 @@ MAX_ORDERS_DAY = int(os.environ.get("STALEBOT_MAX_ORDERS", "200"))
 # mercados recientes y el puente ws->cid del laboratorio ya no existe. Sin resolver no hay margen
 # realizado, y el margen realizado es LO UNICO que decide si esto paga.
 H = ["ts", "ws", "tok", "token_id", "cid", "ttc", "ask_visto", "tam_visto", "precio_pedido",
-     "size_pedido", "actividad", "modo", "ms_envio", "estado", "size_llenado", "precio_medio",
+     "size_pedido", "actividad", "ms_precarga", "modo", "ms_envio", "estado", "size_llenado",
+     "precio_medio",
      "order_id", "error", "respuesta_cruda"]
 LOCK = threading.Lock()
 LIVE = "--live" in sys.argv and os.environ.get("STALEBOT_LIVE") == "yes"
@@ -245,6 +246,11 @@ def ventana(ws, mk):
     lv = {"Up": {}, "Down": {}}
     hist = []; ultimo = [0.0]; hecho = [False]; dicho = [False]   # dicho: ya avisamos en esta ventana
     ndet = [0]; sinlibro = [0]; nticks = [0]    # detecciones / descartadas sin libro / ticks de spot
+    # La precarga mide el MISMO camino que recorrera la orden, pero al abrir la ventana y sin
+    # nada en juego: es una sonda gratuita del estado de la red. Se registra para comprobar si
+    # predice los envios lentos (una precarga de 1.128 ms precedio a una orden de 5.379). Si la
+    # correlacion existe, saltarse esas ventanas sale gratis. Con n=1 todavia no se toca nada.
+    msprec = [None]
 
     # ⛔ Antes aqui se calentaba la CONEXION con un get_ok(). Medido y NO servia: 402 ms de mediana
     # sin calentar (n=8), 401 calentando (n=9). Lo que habia que calentar era otra cosa.
@@ -265,7 +271,8 @@ def ventana(ws, mk):
                 CLIENT[0].create_order(
                     order_args=OrderArgs(token_id=toks[tk], price=0.50, side=Side.BUY, size=10),
                     options=op)                      # firmada y descartada: no sale de aqui
-            print(f"   [cachés] tick y version precargados en {1000*(time.time()-t0):.0f} ms", flush=True)
+            msprec[0] = round(1000 * (time.time() - t0), 1)
+            print(f"   [cachés] tick y version precargados en {msprec[0]:.0f} ms", flush=True)
         except Exception as e:
             print(f"   [cachés] no se pudieron precargar: {str(e)[:70]}", flush=True)
 
@@ -305,7 +312,7 @@ def ventana(ws, mk):
         coste = ask * n
         motivo = puedo_gastar(coste)
         base = [round(t, 3), ws, tok, toks[tok], mk.get("cid", ""), round(ttc, 1), ask, round(tam),
-                ask, n, round(tasa(t))]
+                ask, n, round(tasa(t)), msprec[0] if msprec[0] is not None else ""]
         if motivo:
             # 🔇 Otra puerta muda: al agotarse el tope el bot dejaba de operar sin decir nada y
             # parecia que se habia quedado sordo. Se avisa UNA vez (no una por deteccion).
