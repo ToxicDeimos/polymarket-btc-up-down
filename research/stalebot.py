@@ -150,8 +150,26 @@ def tasa(t):
 
 # ---- límites duros ----
 SIZE = 5              # mínimo del mercado (minimum_order_size)
-MAX_PRICE = 0.95      # no perseguir precios casi resueltos
-MIN_PRICE = 0.05
+# 💰 TOPE DE PRECIO: 0,95 → 0,60 el 4-oct-2026. Lo vio el usuario mirando el registro en vivo (el
+# bot compro a 0,89 y a 0,70) — "no se puede comprar tan caro porque las ganadoras no compensan".
+# Lo confirma research/precio.py sobre 3.962 disparos de papel en regimen tranquilo, midiendo por
+# fin en RETORNO SOBRE EL CAPITAL y no en puntos del nocional, que es como lo habiamos medido todo:
+#
+#   precio       pp nocional   retorno capital   coste/op
+#   <0,15          +5,83          +84,15%          1,03$
+#   0,30-0,45     +11,75          +31,52%          1,86$
+#   0,45-0,60     +10,30          +19,85%          2,59$
+#   0,60-0,75      +7,61          +11,29%          3,37$
+#   >0,88          −0,29           −0,30%          4,76$   ← ni aporta, y cuesta 4,6x mas
+#
+# 🔑 Las dos unidades ORDENAN LAS FRANJAS AL REVES: en puntos del nocional la mejor parece
+# 0,30-0,45; por dinero puesto, cuanto mas barato mejor, monotono. Una ventaja de 2 centimos es un
+# +2,2% a precio 0,89 y un +10% a precio 0,20, y lo que limita una cuenta de 15 $ es el CAPITAL.
+# No se baja mas de 0,60 a proposito: por debajo de 0,15 la tabla sale espectacular pero choca con
+# el sesgo favorito-longshot ya medido (los boletos baratos estan SOBREvalorados) y con que el
+# relleno del papel es ~10x optimista. Se quita lo que estorba, no se apuesta por lo no comprobado.
+MAX_PRICE = float(os.environ.get("STALEBOT_MAX_PRICE", "0.60"))
+MIN_PRICE = float(os.environ.get("STALEBOT_MIN_PRICE", "0.05"))
 # El tope de GASTO es a la vez el capital necesario y la pérdida máxima: no se puede perder más de lo
 # gastado. Se puede bajar sin tocar el código:  STALEBOT_MAX_SPEND=5 STALEBOT_MAX_ORDERS=2 ...
 MAX_SPEND_DAY = float(os.environ.get("STALEBOT_MAX_SPEND", "25"))
