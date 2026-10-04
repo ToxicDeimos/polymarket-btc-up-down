@@ -147,7 +147,12 @@ def ab(R):
     print("=" * 72)
     ramas = {}
     for r in R:
-        try: d = int(float(r.get("retraso") or 0))
+        # 🐛 Las ordenes ANTERIORES al A/B no tienen columna 'retraso'. Tratarlas como 0 las metia
+        # en la rama rapida y la comparacion salia 361 contra 9: no estabamos comparando ramas,
+        # estabamos comparando el historico entero contra las nueve de hoy.
+        v = (r.get("retraso") or "").strip()
+        if not v: continue
+        try: d = int(float(v))
         except Exception: continue
         ramas.setdefault(d, []).append(r)
     if not ramas or (len(ramas) == 1 and 0 in ramas):
