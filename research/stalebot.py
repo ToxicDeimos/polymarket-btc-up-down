@@ -28,19 +28,58 @@ SEGURIDAD (dos cerrojos, y por defecto NO opera):
   · fichero STOP en este directorio → deja de operar inmediatamente
   · la clave sale del entorno, nunca del código, y no se imprime jamás
 
-⚠ stalebot NO lee ningun fichero: todo sale de os.environ. El .env hay que CARGARLO a mano, y tiene
-  que ser el de ESTE directorio (research/.env), no el de la raiz del proyecto. El de la raiz es de
-  otra epoca y le faltan POLY_SIGNATURE_TYPE y POLY_FUNDER, sin las cuales el CLOB V2 rechaza las
-  ordenes con "maker address not allowed". Cargar el que no es falla de una forma que no lo parece.
+⚠ El .env que vale es el de ESTE directorio (research/.env), nunca el de la raiz del proyecto: el de
+  la raiz es de otra epoca y le faltan POLY_SIGNATURE_TYPE y POLY_FUNDER, sin las cuales el CLOB V2
+  rechaza las ordenes con "maker address not allowed". Cargar el que no es falla de forma que no lo
+  parece. Desde el 4-oct-2026 lo carga el propio bot (carga_env), asi que ya no hay que hacerlo a
+  mano — antes olvidarlo imprimia el banner en modo REAL y se moria despues con "falta PRIVATE_KEY",
+  dejando creer que estaba corriendo.
+
+  STALEBOT_LIVE es la UNICA que no se coge del fichero: el modo real necesita el flag --live Y la
+  variable, y si el .env pudiera poner la segunda bastaria el flag. Se escribe a mano, siempre.
 
     cp .env.example .env     &&  editar .env con la clave
-    python3 stalebot.py                      # simulado, no manda nada
-    set -a && . ./.env && set +a             # <- el de research/, ojo
+    python3 stalebot.py                              # simulado, no manda nada
     STALEBOT_LIVE=yes python3 stalebot.py --live     # real, tamaño mínimo
 """
 import websocket, json, time, threading, csv, os, sys, urllib.request, math
 
 DIR = os.path.dirname(__file__)
+
+
+def carga_env():
+    """Mete research/.env en el entorno. NUNCA imprime valores.
+
+    Antes el bot no leia ningun fichero y habia que lanzarlo con `set -a && . ./.env && set +a`
+    delante. Olvidarlo no fallaba al arrancar: imprimia el banner en modo REAL y se moria despues
+    con "falta PRIVATE_KEY", dejando creer que estaba corriendo. Paso el 4-oct-2026.
+
+    Tres reglas:
+    · SOLO el .env de ESTE directorio. El de la raiz del proyecto es del executor viejo (SDK v1) y
+      trae otro signature_type/funder: cargarlo aqui firmaria con la cuenta equivocada.
+    · Lo que YA esta en el entorno manda, para que una variable de la linea de comandos pise al
+      fichero y no al reves.
+    · STALEBOT_LIVE se EXCLUYE a proposito. El modo real exige DOS llaves (el flag --live y la
+      variable); si el fichero pudiera poner la segunda, bastaria el flag y la guarda dejaria de
+      existir. Que el bot cargue su clave solo es comodidad; que decida solo operar con dinero
+      real, no.
+    """
+    p = os.path.join(DIR, ".env")
+    if not os.path.exists(p): return
+    for linea in open(p, encoding="utf-8", errors="replace"):
+        linea = linea.strip()
+        if not linea or linea.startswith("#"): continue
+        if linea.startswith("export "): linea = linea[7:]
+        k, sep, v = linea.partition("=")
+        k = k.strip()
+        if not sep or not k or k == "STALEBOT_LIVE" or k in os.environ: continue
+        v = v.strip()
+        if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'": v = v[1:-1]
+        os.environ[k] = v
+
+
+carga_env()          # antes de leer ninguna variable, que varias son parametros del bot
+
 LOG = os.path.join(DIR, "stalebot_log.csv")
 STOP = os.path.join(DIR, "STOP")
 WSS = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
