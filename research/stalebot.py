@@ -82,6 +82,23 @@ MAX_VACIAS = 3
 WARM = 300.0          # 5 min de calentamiento antes de la primera orden
 T0 = time.time()
 
+# ⏱️ A/B DE LATENCIA (4-oct-2026). La pregunta que queda viva en este mercado: ¿nos llena poco (6%)
+# porque llegamos tarde, o porque perdemos la cola pase lo que pase? Las dos medidas que tenemos se
+# contradicen y ninguna tiene potencia:
+#   · el papel dice que el relleno cae del 92% al 61% entre 52 y 200 ms  → la velocidad lo es todo
+#   · el PC es 55 ms mas rapido que la Pi y llena IGUAL (6% vs 7%)       → la velocidad da igual
+#     pero con 175 y 140 ordenes ese test no distingue un 6% de un 9%.
+# Aqui se zanja con un experimento controlado: ventanas PARES normales, ventanas IMPARES con el envio
+# retrasado AB_MS ms a proposito. Mismo bot, misma maquina, mismas señales, mismo filtro de regimen;
+# lo unico que cambia es la latencia. Se apunta en la columna 'retraso' y lo lee botlog.py.
+#   · si la rama retrasada llena MUCHO menos → la velocidad es la restriccion y vale la pena medir
+#     cuanto se gana acercandose al origen de Polymarket (un VPS europeo ahorra ~30 ms de red).
+#   · si llenan IGUAL con 250 ms de diferencia → no es velocidad, es la cola, y entonces ningun
+#     VPS ni ninguna optimizacion sirve. Pregunta cerrada con dato, no con opinion.
+# Se eligen 250 ms a proposito: es mucho mas que los 30-55 que podriamos ganar, asi que si ESTO no
+# mueve el relleno, lo pequeño tampoco. Potencia primero; el tamaño fino del efecto, despues.
+AB_MS = int((os.environ.get("STALEBOT_AB_MS") or "250").strip())
+
 
 def tasa(t):
     """Detecciones por hora. Antes de llevar una hora encendido se extrapola el rato observado."""
@@ -101,8 +118,8 @@ MAX_ORDERS_DAY = int(os.environ.get("STALEBOT_MAX_ORDERS", "200"))
 # mercados recientes y el puente ws->cid del laboratorio ya no existe. Sin resolver no hay margen
 # realizado, y el margen realizado es LO UNICO que decide si esto paga.
 H = ["ts", "ws", "tok", "token_id", "cid", "ttc", "ask_visto", "tam_visto", "precio_pedido",
-     "size_pedido", "actividad", "ms_precarga", "modo", "ms_envio", "estado", "size_llenado",
-     "precio_medio",
+     "size_pedido", "actividad", "ms_precarga", "retraso", "modo", "ms_envio", "estado",
+     "size_llenado", "precio_medio",
      "order_id", "error", "respuesta_cruda"]
 LOCK = threading.Lock()
 LIVE = "--live" in sys.argv and os.environ.get("STALEBOT_LIVE") == "yes"
@@ -242,6 +259,10 @@ def manda_orden(token_id, precio, tick, neg_risk, n):
 def ventana(ws, mk):
     toks = mk["toks"]; id2 = {toks["Up"]: "Up", toks["Down"]: "Down"}
     close = ws + 300
+    # Rama del A/B: alternar por VENTANA y no por orden, para que las dos ramas vean mercados
+    # distintos pero equivalentes en media. Alternar dentro de la misma ventana las emparejaria
+    # mejor, pero las ordenes de una ventana no son independientes (mismo salto, mismo libro).
+    retraso = AB_MS if (ws // 300) % 2 else 0
     bk = {"Up": [None, None, 0.0], "Down": [None, None, 0.0]}
     lv = {"Up": {}, "Down": {}}
     hist = []; ultimo = [0.0]; hecho = [False]; dicho = [False]   # dicho: ya avisamos en esta ventana
@@ -312,7 +333,7 @@ def ventana(ws, mk):
         coste = ask * n
         motivo = puedo_gastar(coste)
         base = [round(t, 3), ws, tok, toks[tok], mk.get("cid", ""), round(ttc, 1), ask, round(tam),
-                ask, n, round(tasa(t)), msprec[0] if msprec[0] is not None else ""]
+                ask, n, round(tasa(t)), msprec[0] if msprec[0] is not None else "", retraso]
         if motivo:
             # 🔇 Otra puerta muda: al agotarse el tope el bot dejaba de operar sin decir nada y
             # parecia que se habia quedado sordo. Se avisa UNA vez (no una por deteccion).
@@ -330,6 +351,10 @@ def ventana(ws, mk):
         # una orden que sale 3 s tarde compra al precio YA corregido. Hay que ponerle plazo corto y abortar
         # si se pasa, pero el plazo se elige viendo cuanto tardan las que SI pasan: falta una sesion con
         # saldo suficiente para tener esos ms_envio.
+        # ⏱️ El retraso del A/B va AQUI, justo antes de enviar y despues de decidir: asi la rama
+        # lenta ve exactamente la misma señal y toma exactamente la misma decision que la rapida,
+        # y lo unico que las separa es cuando llega la orden. ms_envio sigue midiendo solo el envio.
+        if retraso: time.sleep(retraso / 1000.0)
         t0 = time.time()
         try:
             est, size, px, oid, err, crudo, pagado = manda_orden(toks[tok], ask, mk["tick"],
@@ -475,8 +500,9 @@ def main():
             if not mk.get("acepta", True):
                 print(f"── {ws} el mercado NO acepta ordenes, la salto", flush=True)
                 time.sleep(20); continue
+            rama = "LENTA +%d ms" % AB_MS if (ws // 300) % 2 else "RAPIDA"
             print(f"── {ws} tick {mk['tick']} · neg_risk {mk['neg_risk']} · "
-                  f"cierra en {int(ws + 300 - time.time())}s", flush=True)
+                  f"cierra en {int(ws + 300 - time.time())}s · rama {rama}", flush=True)
             ventana(ws, mk)
             if VACIAS[0] >= MAX_VACIAS:
                 print("", flush=True)

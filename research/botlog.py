@@ -15,7 +15,7 @@ número. Esto lee `stalebot_log.csv` y contesta las cuatro preguntas que importa
 
     cd ~/polymarket-btc-up-down/research && python3 botlog.py
 """
-import csv, os, sys, time, statistics as st
+import csv, glob, os, sys, time, statistics as st
 
 DIR = os.path.dirname(os.path.abspath(__file__))
 LOG = os.path.join(DIR, "stalebot_log.csv")
@@ -31,13 +31,20 @@ def pct(k, n):
 
 
 def carga():
-    if not os.path.exists(LOG): return []
+    """Todas las ordenes reales, incluidas las de los registros APARTADOS.
+
+    Cuando cambian las columnas, stalebot renombra el registro a stalebot_log_<fecha>.csv y empieza
+    uno nuevo (no borra nada). Leyendo solo el principal perderiamos de vista todo lo anterior sin
+    avisar — que es justo lo que paso al añadir la columna 'retraso' del A/B.
+    """
     R = []
-    for r in csv.DictReader(open(LOG, encoding="utf-8", errors="replace")):
-        if (r.get("modo") or "") != "real": continue
-        try: r["_t"] = float(r["ts"])
-        except Exception: continue
-        R.append(r)
+    for p in sorted(glob.glob(os.path.join(DIR, "stalebot_log_*.csv"))) + [LOG]:
+        if not os.path.exists(p): continue
+        for r in csv.DictReader(open(p, encoding="utf-8", errors="replace")):
+            if (r.get("modo") or "") != "real": continue
+            try: r["_t"] = float(r["ts"])
+            except Exception: continue
+            R.append(r)
     return R
 
 
@@ -119,7 +126,67 @@ def main():
             print(f"    {k:<14} {prim.get(k)}")
         print(f"    respuesta_cruda  {str(prim.get('respuesta_cruda'))[:300]}")
 
+    ab(R)
     realizado(R)
+
+
+def ab(R):
+    """F) EL A/B DE LATENCIA: ¿nos llena poco porque llegamos tarde o porque perdemos la cola?
+
+    Las dos medidas que teniamos se contradicen (el papel dice que el relleno cae del 92% al 61%
+    entre 52 y 200 ms; el PC es 55 ms mas rapido que la Pi y llena igual) y ninguna tenia potencia.
+    El bot alterna ahora ventanas PARES sin retraso e IMPARES con un retraso deliberado, asi que la
+    unica diferencia entre las dos ramas es CUANDO llega la orden.
+
+    El retraso es grande (250 ms por defecto) a proposito: es mucho mas de lo que podriamos ganar
+    acercandonos al origen de Polymarket, asi que si ESTO no mueve el relleno, lo pequeño tampoco.
+    """
+    import statistics as st
+    print("\n" + "=" * 72)
+    print("  F) A/B DE LATENCIA — ¿la velocidad cambia el relleno?")
+    print("=" * 72)
+    ramas = {}
+    for r in R:
+        try: d = int(float(r.get("retraso") or 0))
+        except Exception: continue
+        ramas.setdefault(d, []).append(r)
+    if not ramas or (len(ramas) == 1 and 0 in ramas):
+        print("  todavia no hay ordenes con el A/B activo (columna 'retraso' vacia o toda a 0).")
+        print("  Las ordenes anteriores al 4-oct-2026 no lo llevan y no entran en esta comparacion.")
+        return
+    print(f"  {'rama':<18}{'ordenes':>9}{'relleno':>22}{'ms_envio':>11}")
+    datos = {}
+    for d in sorted(ramas):
+        g = ramas[d]
+        k = sum(1 for r in g if clase(r) == "llena")
+        ms = [float(r["ms_envio"]) for r in g if (r.get("ms_envio") or "").strip()]
+        datos[d] = (k, len(g))
+        nom = "rapida" if d == 0 else f"lenta (+{d} ms)"
+        print(f"  {nom:<18}{len(g):>9}{pct(k, len(g)):>22}"
+              f"{(f'{st.median(ms):.0f}' if ms else '—'):>11}")
+
+    if len(datos) >= 2 and 0 in datos:
+        d1 = max(x for x in datos if x > 0)
+        k0, n0 = datos[0]; k1, n1 = datos[d1]
+        if n0 and n1:
+            p0, p1 = k0 / n0, k1 / n1
+            se = (p0 * (1 - p0) / n0 + p1 * (1 - p1) / n1) ** 0.5
+            print(f"\n  diferencia (rapida − lenta): {100*(p0-p1):+.1f} puntos"
+                  f" ± {100*se:.1f}   z = {((p0-p1)/se) if se else float('nan'):+.2f}")
+            # potencia: ¿podria este tamaño de muestra ver una caida a la MITAD?
+            p = (k0 + k1) / (n0 + n1)
+            if 0 < p < 1:
+                nmin = int(1.96 ** 2 * 2 * p * (1 - p) / (p / 2) ** 2) + 1
+                print(f"  para distinguir 'se llena la mitad' hacen falta ~{nmin} ordenes por rama"
+                      f" (hay {min(n0, n1)})")
+            if se and abs(p0 - p1) > 2 * se:
+                print("\n  ⇒ LA VELOCIDAD SI MANDA. Merece la pena medir cuanto se gana acercandose")
+                print("     al origen de Polymarket (un VPS europeo ahorra ~30 ms de red).")
+            elif min(n0, n1) >= (nmin if 0 < p < 1 else 1e9):
+                print("\n  ⇒ CON MUESTRA SUFICIENTE, 250 ms NO CAMBIAN EL RELLENO. No es velocidad:")
+                print("     es la cola. Ningun VPS ni optimizacion de codigo arregla eso.")
+            else:
+                print("\n  (aun sin potencia para concluir: dejar correr)")
 
 
 def realizado(R):
