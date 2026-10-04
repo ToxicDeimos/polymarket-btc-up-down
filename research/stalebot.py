@@ -26,6 +26,11 @@ SEGURIDAD (dos cerrojos, y por defecto NO opera):
   · tope de GASTO diario: como máximo se puede perder lo gastado, así que capar el gasto capa la pérdida
   · una orden por ventana · solo con >60 s de ventana por delante (con menos, el mecanismo era NEGATIVO)
   · fichero STOP en este directorio → deja de operar inmediatamente
+  · SUELO DE SALDO: se consulta al CLOB al abrir cada ventana y, por debajo de STALEBOT_SALDO_MIN
+    (8 $ por defecto), el bot crea el STOP y SALE. El tope de gasto es diario y se reinicia cada
+    medianoche, asi que no protege de una mala racha larga; este es el freno acumulado. Si no
+    consigue leer el saldo 5 veces seguidas tambien para: un freno que se apaga cuando falla la
+    red no es un freno.
   · la clave sale del entorno, nunca del código, y no se imprime jamás
 
 ⚠ El .env que vale es el de ESTE directorio (research/.env), nunca el de la raiz del proyecto: el de
@@ -152,6 +157,15 @@ MIN_PRICE = 0.05
 MAX_SPEND_DAY = float(os.environ.get("STALEBOT_MAX_SPEND", "25"))
 MAX_ORDERS_DAY = int(os.environ.get("STALEBOT_MAX_ORDERS", "200"))
 
+# 🛑 SUELO DE SALDO. El tope de gasto es DIARIO y se reinicia cada medianoche, asi que no protege la
+# cuenta de una mala racha larga: diez dias malos seguidos la vacian sin pasarse ni un dia del tope.
+# Esto es el otro freno, el acumulado, y lo decide el saldo REAL preguntado al CLOB, no nuestra
+# contabilidad (que puede desviarse: makingAmount no siempre viene, y entonces se asume lo peor).
+# Al saltar deja el fichero STOP puesto, asi que tampoco opera si alguien lo relanza sin mirar.
+SALDO_MIN = float(os.environ.get("STALEBOT_SALDO_MIN", "8"))
+SALDO = {"visto": None, "fallos": 0}
+MAX_FALLOS_SALDO = 5
+
 # "cid" = conditionId del mercado. Lo conocemos al descubrir la ventana y NO lo guardabamos: sin el,
 # pasadas unas horas no hay forma de resolver nuestras propias operaciones, porque Gamma solo devuelve
 # mercados recientes y el puente ws->cid del laboratorio ya no existe. Sin resolver no hay margen
@@ -222,6 +236,69 @@ def puedo_gastar(coste):
     if DIA["ordenes"] >= MAX_ORDERS_DAY: return f"tope de {MAX_ORDERS_DAY} ordenes/dia"
     if DIA["gasto"] + coste > MAX_SPEND_DAY: return f"tope de {MAX_SPEND_DAY:.0f}$/dia"
     return None
+
+
+def para(motivo):
+    """Deja el fichero STOP puesto y lo dice bien alto.
+
+    No se borra solo a proposito: si el bot se ha frenado por si mismo, hay que mirar la cuenta
+    antes de volver a operar. Un relanzamiento a ciegas se encuentra el STOP y no arranca.
+    """
+    try:
+        with open(STOP, "w", encoding="utf-8") as f:
+            f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} freno automatico: {motivo}\n")
+    except Exception as e:
+        print(f"   ⚠ no se pudo crear el fichero STOP: {e}", flush=True)
+    print("\n" + "🛑" * 24, flush=True)
+    print(f"   FRENO AUTOMATICO — {motivo}", flush=True)
+    print(f"   Queda {STOP} puesto: un relanzamiento tampoco operara.", flush=True)
+    print(f"   Para seguir: revisar la cuenta y borrar ese fichero.", flush=True)
+    print("🛑" * 24 + "\n", flush=True)
+
+
+def saldo():
+    """USDC disponible en la cuenta, en dolares. Lanza si no se puede leer.
+
+    Viene en micro-USDC (6 decimales), como todo importe en Polygon. El factor NO es una
+    suposicion: se comprueba con saldo.py, que imprime el valor crudo y las dos lecturas posibles
+    para contrastarlas con la web. Un freno de seguridad con el factor mal pararia el bot el
+    primer dia creyendo que quedan 0,0000156 $.
+    """
+    from py_clob_client_v2 import AssetType, BalanceAllowanceParams
+    kw = {"asset_type": AssetType.COLLATERAL}
+    st = os.environ.get("POLY_SIGNATURE_TYPE")
+    if st: kw["signature_type"] = int(st)
+    r = CLIENT[0].get_balance_allowance(BalanceAllowanceParams(**kw))
+    d = r if isinstance(r, dict) else getattr(r, "__dict__", {})
+    raw = d.get("balance")
+    if raw is None: raise RuntimeError(f"la respuesta no trae 'balance': {str(d)[:150]}")
+    return float(raw) / 1e6
+
+
+def freno_saldo():
+    """True si hay que parar. Se llama al ABRIR cada ventana, nunca en el camino de la orden:
+    es una peticion HTTP de ~60 ms y meterla donde se decide costaria justo lo que intentamos
+    ahorrar."""
+    try:
+        s = saldo()
+        SALDO["fallos"] = 0
+    except Exception as e:
+        SALDO["fallos"] += 1
+        print(f"   ⚠ no se pudo leer el saldo ({SALDO['fallos']}/{MAX_FALLOS_SALDO}): "
+              f"{str(e)[:90]}", flush=True)
+        # Fallar CERRANDO. Si llevamos varias seguidas sin saber cuanto queda, se para: un freno
+        # que se desactiva solo cuando falla la red no es un freno.
+        if SALDO["fallos"] >= MAX_FALLOS_SALDO:
+            para(f"{MAX_FALLOS_SALDO} lecturas de saldo fallidas seguidas: no se cuanto queda")
+            return True
+        return False
+    if SALDO["visto"] is None or abs(s - SALDO["visto"]) >= 0.25:
+        print(f"   💰 saldo {s:.2f}$ (freno en {SALDO_MIN:.2f}$)", flush=True)
+        SALDO["visto"] = s
+    if s < SALDO_MIN:
+        para(f"saldo {s:.2f}$, por debajo del minimo de {SALDO_MIN:.2f}$")
+        return True
+    return False
 
 
 def _api_creds():
@@ -518,6 +595,7 @@ def main():
     print("=" * 74)
     print(f"  stalebot · modo {modo}")
     print(f"  tamaño {SIZE} acciones · tope {MAX_SPEND_DAY:.0f}$/día · {MAX_ORDERS_DAY} órdenes/día")
+    print(f"  🛑 se PARA SOLO si el saldo baja de {SALDO_MIN:.2f}$ (se comprueba cada ventana)")
     print(f"  una orden por ventana · solo con >{MIN_TTC:.0f}s por delante · precio {MIN_PRICE}-{MAX_PRICE}")
     print(f"  solo en ratos TRANQUILOS: <={MAX_ACT} detecciones/hora "
           f"(el papel: tranquilo +7,89 a resolucion · agitado +1,80)")
@@ -528,6 +606,8 @@ def main():
         if os.path.exists(STOP):
             print("existe el fichero STOP: no arranco. Bórralo si quieres operar."); return
         CLIENT[0] = arranca_cliente()
+        # Antes de la primera ventana: si ya estamos por debajo del suelo, ni empezamos.
+        if freno_saldo(): return
     elif "--live" in sys.argv:
         print("  ⚠ pasaste --live pero falta STALEBOT_LIVE=yes en el entorno → sigo en simulado", flush=True)
     try:
@@ -542,6 +622,7 @@ def main():
             rama = "LENTA +%d ms" % AB_MS if (ws // 300) % 2 else "RAPIDA"
             print(f"── {ws} tick {mk['tick']} · neg_risk {mk['neg_risk']} · "
                   f"cierra en {int(ws + 300 - time.time())}s · rama {rama}", flush=True)
+            if LIVE and freno_saldo(): return
             ventana(ws, mk)
             if VACIAS[0] >= MAX_VACIAS:
                 print("", flush=True)
