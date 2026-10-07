@@ -11,7 +11,7 @@ y se contrasta con lo que dice la web.
 
 Usa las mismas credenciales que stalebot (research/.env, cargado por el propio stalebot).
 """
-import os, sys
+import os, sys, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import stalebot                                    # noqa: E402  (carga research/.env al importarse)
@@ -26,7 +26,26 @@ def main():
     kw = {"asset_type": AssetType.COLLATERAL}
     st = os.environ.get("POLY_SIGNATURE_TYPE")
     if st: kw["signature_type"] = int(st)
-    r = cli.get_balance_allowance(BalanceAllowanceParams(**kw))
+
+    # La conexion de la Pi con el CLOB NO es fiable: "Connection reset by peer" en el handshake
+    # TLS, y "read operation timed out" en el propio bot. Una consulta de saldo que se rinde al
+    # primer intento no sirve para nada. Se reintenta y, si falla del todo, se dice CUANTAS veces
+    # fallo, que es informacion sobre la conexion y no solo sobre el saldo.
+    ultimo = None
+    for i in range(4):
+        try:
+            r = cli.get_balance_allowance(BalanceAllowanceParams(**kw))
+            if i: print(f"  (funciono al intento {i+1}: la conexion falla a ratos)")
+            break
+        except Exception as e:
+            ultimo = e
+            print(f"  intento {i+1}/4 fallido: {type(e).__name__}: {str(e)[:80]}")
+            time.sleep(1.5 * (i + 1))
+    else:
+        print(f"\n⚠ 4 intentos fallidos. La Pi no esta llegando al CLOB ahora mismo.")
+        print(f"  ultimo error: {type(ultimo).__name__}: {str(ultimo)[:120]}")
+        print("  No es un fallo de este script: el bot registra los mismos timeouts.")
+        return
     d = r if isinstance(r, dict) else getattr(r, "__dict__", {"resp": str(r)})
 
     print("\nrespuesta cruda del CLOB:")
