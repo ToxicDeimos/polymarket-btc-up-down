@@ -1,216 +1,165 @@
-# Polymarket BTC Up/Down 15m — Trading Bot
+# Polymarket BTC Up/Down — buscar un edge real y saber cuándo no lo hay
 
-Bot de investigación y trading para el mercado **"Bitcoin Up or Down - 15 min"** de
-[Polymarket](https://polymarket.com). Monitorea precios reales, ejecuta estrategias,
-aprende de los resultados y muestra todo en un panel web en tiempo real.
+Investigación cuantitativa sobre los mercados **"Bitcoin Up or Down"** (5 y 15 minutos) de
+[Polymarket](https://polymarket.com): un binario que paga 1 $ si BTC cierra la ventana por encima
+de donde la abrió.
 
-> ⚠️ **Estado actual: DRY RUN (simulación).** No opera con dinero real por defecto.
-> El bot se usa para validar si existe un *edge* explotable **antes** de arriesgar capital.
+Cinco meses (mayo–octubre 2026), 280 commits, servicios corriendo 24/7 en una Raspberry Pi y
+~20 hipótesis probadas con reglas fijadas **antes** de ver el dato.
 
----
-
-## 📊 Cómo funciona el mercado
-
-Cada 15 minutos se abre una ventana. El mercado resuelve a **"Up"** si el precio de
-Bitcoin al cierre es ≥ al de apertura, y a **"Down"** en caso contrario.
-
-- Fuente de resolución: **Chainlink BTC/USD** en Polygon (no el spot de exchanges).
-- Up + Down siempre suman ~$1.00 (precio justo de un binario).
+> **Estado: cerrado.** Se encontró un edge real y medido, y se demostró que es **inalcanzable**
+> por un motivo estructural, no por falta de velocidad. Este README cuenta cómo se llegó ahí.
 
 ---
 
-## 🧠 Estrategia actual: FADE del favorito temprano
+## TL;DR
 
-> El enfoque original (lag Binance→Chainlink) se **midió y descartó** — el mercado es
-> eficiente a esa escala (ver Hallazgos). La estrategia activa ahora es el **fade**, que
-> corre en **DRY como test out-of-sample** de la ineficiencia de precio encontrada.
-
-| Modo | Cuándo | Lógica |
-|------|--------|--------|
-| **FADE** (`directional`) | hay precios y `trend_strength` < 0.35% | Compra el lado **barato** (favorito fadeado) en T∈[30,60]s |
-| **SKIP** | sin precios, o **tendencia fuerte** (≥0.35%) | No opera (en trend fuerte el movimiento continúa) |
-
-### La regla (pre-registrada — ver `brain.py` → `evaluate_fade`)
-
-```
-En T ∈ [30, 60]s de la ventana:
-  si un lado cotiza ask ∈ [0.35, 0.48]  →  comprarlo (el mercado sobrerreaccionó)
-  salvo que trend_strength ≥ 0.35%      →  skip (tendencia fuerte: el favorito continúa)
-Una sola apuesta por ventana · hold hasta resolución.
-```
-
-El favorito temprano gana solo ~48-50% (revierte) en chop, pero ~56% (continúa) en
-tendencia fuerte → fadear es +EV solo fuera de la tendencia fuerte.
-
-### ⏱️ Criterio de muerte (pre-fijado — sin re-tunear)
-
-El dry P&L de aquí en adelante, sobre ventanas **nuevas**, es el test out-of-sample:
-
-```
-Evaluar tras ≥40 apuestas fade resueltas (correr `python validate.py`):
-  CONTINÚA si  EV realizado por apuesta > 0  Y  win_rate > precio medio de entrada
-  SE DESCARTA si EV ≤ 0  (el edge no sobrevive fuera de muestra, como el lag)
-```
+| | |
+|---|---|
+| **Hipótesis inicial** | Polymarket va por detrás de Binance → apostar con ventaja. **Falsa**: el libro reprecia en < 5 s. |
+| **Lo que sí existe** | Tras un salto de BTC, los creadores de mercado tardan en recotizar. A los 200 ms al libro le quedan **+4 pp** por recorrer. Comprar esa cotización vieja y aguantar a resolución da **+6,3 ± 1,1 pp** por operación en papel (z ≈ 6). |
+| **Por qué no se puede cobrar** | Con órdenes reales emparejadas con su gemela en papel: las que se llenaron dan **−2,6 pp**; las que no, **+7,9 pp** (diferencia z = −3,65). Solo te llenan cuando el precio *no* se está moviendo, y entonces no hay nada que ganar. |
+| **Lección** | Un edge medido en papel no es un edge cobrable. Lo que decide es **qué órdenes te llenan**, y eso solo lo responde dinero real. |
 
 ---
 
-## 🔬 Hallazgos empíricos (dry run)
+## 1. La hipótesis que se cayó primero: el "lag"
 
-El dry run cumplió su función: **dar evidencia antes de arriesgar dinero.**
+El mercado resuelve con **Chainlink BTC/USD**, que actualiza cada ~27 s. La idea obvia: Binance
+se mueve primero, Polymarket sigue después, compras en medio.
 
-**1. El arbitrage de doble límite 40¢ NO funciona aquí** (descartado y eliminado).
-El mercado BTC 15m cierra a un extremo (0.01/0.99) el **88%** de las veces — *tiende,
-no oscila* — así que ambos lados nunca llenan a la vez: **0 dobles en 7 intentos**.
+Medido sobre 268 ventanas y 38 k pares de precios: `corr(Δspot, Δask)` es **+0,63 a 0 s y ~0 desde
+5 s**. El libro reprecia a la vez que Binance. No hay retraso explotable sondeando cada pocos
+segundos.
 
-**2. El "edge del lag" NO existe — el mercado es eficiente.**
-La tesis original (Polymarket va por detrás de Binance porque Chainlink actualiza cada
-~27s) se **midió** con 268 ventanas: `corr(Δspot, Δask) = +0.63 a 0s` y **~0 a partir de
-5s**. El ask reprecia al instante; no hay retraso explotable por un bot que sondea cada 5s
-con 2s de latencia. *(reproducible con `validate.py`, bloque 1)*
+Por el camino apareció un bug: el estimador de volatilidad usaba `media(|ΔP|/Δt)` donde la fórmula
+exige `sqrt(media(ΔP²/Δt))`. Infraestimaba la vol **~10×** y el modelo decía "93 % seguro" en
+apuestas que ganaban el 63 %. El "beneficio" inicial era el bug más una tendencia bajista limpia.
 
-**3. Bug de volatilidad → sobreconfianza ~10x (corregido).**
-El Brain estimaba la vol con `media(|ΔP|/Δt)` en una fórmula que exige
-`sqrt(media(ΔP²/Δt))` → la infraestimaba ~10x → decía "99% seguro" cuando era ~65%.
-Corregido (vol realizada RMS). Con probabilidades **honestas**, el win rate real es ~53%
-a precios ~0.55 = **-EV**. El "beneficio" previo era el bug (apostaba agresivo) + suerte de
-una tendencia bajista limpia, **no un edge real**.
+## 2. Mirar a quién gana (y no a qué indicador)
+
+Si el mercado es eficiente, ¿alguien gana de forma persistente? Con la Data API pública se
+reconstruyeron **55.745 wallets** y se partió su historial en dos mitades.
+
+- Hay persistencia: el mejor cuartil de la 1.ª mitad sigue ganando en la 2.ª.
+- La wallet más grande (9.366 operaciones) bate el precio que paga en **+2,6 a +3,6 pp en las siete
+  franjas de precio**. Una ventaja *plana* en todo el rango no es una señal direccional, que se
+  concentraría en ciertas zonas: es una propiedad de **la orden** que compra.
+- Seguimiento fuera de muestra (fichados en agosto, medidos en septiembre y octubre): 5 de 6
+  desaparecieron, que es lo que hace la suerte. **Uno siguió ganando y mejorando**. Su ventaja:
+  compra 1,0–1,6 pp más barato que quien opera el mismo token en el mismo segundo
+  (correlación comprar-barato ↔ ganar **+0,64**, n = 165 wallets). No acierta más: **lo llenan mejor**.
+
+## 3. El mecanismo: la cotización vieja
+
+Grabando el libro de Polymarket por WebSocket y el *bookTicker* de Binance al milisegundo en el mismo
+reloj (24 h, 17,8 M de eventos):
+
+- Tras un salto de BTC ≥ 10 $ en 1 s, el libro ha recorrido el 14 % a los 100 ms, el 38 % a los 200 ms
+  y el 98 % a los 5 s.
+- Comprar el ask a los 100 ms del salto: **+2,1 ± 0,4 pp** contra el precio medio asentado (z 5,4).
+  Decae de forma monótona con la latencia y cruza cero hacia los 300 ms.
+- **Control espejo** (mismo instante, el token contrario): **−14,4 pp**. La señal es direccional;
+  no es un artefacto simétrico.
+- Tres gradientes monótonos en la dirección esperada (umbral del salto, rapidez del salto, latencia).
+  No es una casilla con suerte: es una superficie.
+
+Una sorpresa que corrigió mi propia hipótesis: predije **más** edge en momentos agitados (más saltos,
+más cotizaciones viejas). Sale **al revés**, de forma monótona: +7,9 pp en régimen tranquilo y
++1,8 pp en agitado. Con movimiento los creadores de mercado están atentos; cuando está tranquilo, se
+despistan. La primera versión de esa medida tenía *look-ahead* en la etiqueta del régimen. Al
+corregirlo, el gradiente aguantó, pero el umbral pasó de 64 a 102.
+
+## 4. Dinero real: por qué no se puede cobrar
+
+Un bot en papel (`stalepaper`) y uno real (`stalebot`) dispararon en paralelo sobre la misma señal.
+`cruce.py` emparejó **347 de 353 órdenes reales** con su disparo gemelo del papel (mediana de
+desfase: 0,0 s) y comparó qué pasó después:
+
+```
+se llenó       n =  21    −2,57 ± 2,79 pp   (≈ la comisión)
+no se llenó    n = 326    +7,87 ± 0,65 pp
+diferencia                −10,44 ± 2,86 pp   z = −3,65
+```
+
+**Todo el margen está en las órdenes que no conseguimos.** El motivo es casi una tautología:
+solo puedes comprar cuando nadie quiere vender más barato, eso pasa cuando el precio *no* se está
+moviendo y, si no se mueve, no hay cotización vieja que aprovechar.
+
+¿Se arregla con velocidad? Se midió cada pieza del camino:
+
+| tramo | ms | ¿reducible? |
+|---|---|---|
+| Binance → nosotros | ~140 | No. Otras fuentes están más cerca pero actualizan 15–100× menos a menudo. |
+| red hasta el CLOB | ~60 | No. Polymarket ya está en Europa (tras Cloudflare, nodo MAD); un VPS en EE. UU. empeora. |
+| proceso de la orden en su servidor | ~180 | No. Lo paga todo el mundo. |
+| nuestro código (señal + firma) | ~13 | Ya optimizado. Se eliminaron 200 ms de llamadas ocultas del SDK y **la tasa de relleno no se movió**. |
+
+Operar desde el PC en vez de la Pi (55 ms más rápido) tampoco cambió el relleno: 7 ± 2 % frente a
+6 ± 2 %. **La palanca de la latencia está agotada a esta escala.** Coste total del experimento
+real: −8,97 $.
 
 ---
 
-## 🧪 Hipótesis en validación: *fade temprano / follow medio*
+## Método: lo que hizo creíble cada número
 
-Medir el **precio del mercado** (no el lag) reveló una ineficiencia: el mercado
-**sobrerreacciona temprano** (el favorito a 30s gana solo ~48-50%) y **sub-converge a media
-ventana** (un lado a 0.7 acaba ganando 84%). Esto es lo **contrario** de lo que hacía el bot
-(momentum temprano), lo que explica los whipsaws.
+- **Reglas y criterios de abandono fijados antes de ver el dato**, escritos en el commit.
+- **Controles en cada medida**: espejo (token contrario), azar emparejado y división en mitades
+  temporales para la persistencia.
+- **Cazar mis propios errores**, que fabricaron edges que no existían:
+  - *Relojes desalineados*: las marcas de la cinta de Polymarket van **~3 s por delante** del reloj
+    del colector. Cruzarlas sin corregir fabricó un edge de *maker* de +0,7 pp.
+  - *Look-ahead* en la etiqueta de régimen (la hora entera incluía el futuro).
+  - *Bug de volatilidad* (×10) que hacía parecer rentable una estrategia −EV.
+  - *Estimador ruidoso*: el resultado binario da ±1,7 pp. Como el mercado está calibrado, el precio
+    medio es un estimador insesgado del resultado con **4× menos ruido**, y se usó como medida principal.
+- **El papel no basta**: la pregunta decisiva (qué órdenes te llenan) solo se pudo contestar con
+  órdenes reales emparejadas una a una con su gemela simulada.
 
-**Pero depende del régimen** *(medido con `trend_strength`, EMA 7/25 en 15m)*:
+## Ingeniería
 
-| Régimen | Favorito temprano (30s) gana | ¿Fadear es +EV? |
-|---------|------------------------------|-----------------|
-| RANGE (chop) | 44% | Sí (EV favorito −22%) |
-| WEAK | 31% | Sí (EV −47%) |
-| **STRONG trend** | **58%** | **No — el favorito continúa** |
-
-→ Es un posible edge de **mean-reversion, condicionado a chop**. Muere en tendencia fuerte.
-
-### Reglas PRE-REGISTRADAS (congeladas — NO re-tunear con datos futuros)
-
-```
-FADE   : en T ∈ [30, 60]s,   comprar el lado con ask ∈ [0.35, 0.48]
-FOLLOW : en T ∈ [420, 480]s, comprar el lado con ask ∈ [0.65, 0.85]
-Etiqueta de régimen por ventana: trend_strength  (RANGE <0.15% · WEAK <0.35% · STRONG ≥0.35%)
-```
-
-**Barra de aprobación:** +EV (tras fees y fills reales) en **≥2 regímenes macro distintos**,
-incluyendo **una tendencia fuerte**, con **n≥30** e **IC del EV > 0**. Si solo gana en chop
-→ es un artefacto de régimen (como el lag) y se descarta.
-
-**Disciplina:** el bot **no apuesta** este edge hasta que pase la barra. Mientras, actúa solo
-como **colector de datos** (`prices.csv` + winners). La validación es post-procesado puro
-(`validate.py`) — cero código nuevo, cero riesgo. Falta sobre todo una **tendencia alcista
-sostenida** y una **tendencia fuerte** para cerrar el veredicto.
+- **Ingesta en tiempo real**: WebSocket del libro de Polymarket y de Binance, Gamma API, CLOB API,
+  Data API y Chainlink vía RPC de Polygon.
+- **Ejecución**: órdenes firmadas (EIP-712) con `py-clob-client` v1/v2, *deposit wallet flow* del
+  CLOB V2 y comisión verificada contra el propio CLOB hasta el sexto decimal.
+- **Operación 24/7 en una Raspberry Pi** con systemd y un panel web Flask en la LAN.
+- **Recuperación ante desastres**: la tarjeta SD murió tras 8 días grabando el libro al milisegundo.
+  Se rescató la imagen con `dd` y se reconstruyeron los CSV fila a fila por huella, porque los
+  ficheros no estaban contiguos en el disco: se pasó de recuperar el 8 % a recuperar el **98,4 %**.
+  Desde entonces corre sobre un SSD por USB.
 
 ---
 
-## 🗂️ Estructura
+## Estructura
 
 ```
-polymarket-btc-up-down/
-├── main.py          # Punto de entrada
-├── strategy.py      # Bucle por ventana: decide modo, monitorea, apuesta
-├── brain.py         # Motor de decisión direccional + aprendizaje
-├── market.py        # Encuentra el mercado activo (Gamma API, slug por timestamp)
-├── executor.py      # Órdenes CLOB: place / cancel (py-clob-client)
-├── data_feed.py     # Precios: Chainlink (Polygon RPC) + Binance (fallback)
-├── logger.py        # Persistencia: results.csv + prices.csv
-├── dashboard.py     # Panel web Flask (http://localhost:5000)
-├── config.py        # Configuración y flags
-├── analysis.py      # Análisis: calibración del Brain, régimen, vol estimada vs realizada
-├── validate.py      # Validación de ineficiencias: lag, precio (favorito-longshot), régimen
-├── templates/
-│   └── index.html   # UI del dashboard
-├── requirements.txt
-└── .env             # Claves (NO se sube al repo)
+├── main.py, strategy.py, brain.py   # bot original (15m): ciclo por ventana y modelo de decisión
+├── market.py, executor.py           # localizar el mercado (Gamma) y órdenes (CLOB)
+├── data_feed.py                     # Chainlink (Polygon RPC) + Binance
+├── dashboard.py, templates/         # panel web Flask
+├── analysis.py, validate.py         # calibración, régimen y prueba del lag
+└── research/                        # ~190 scripts de investigación; los principales:
+    ├── whowins / persist / siguen.py   # wallets ganadoras y su persistencia
+    ├── queuewatch.py, booklag.py       # grabación al ms y lag libro↔spot
+    ├── stalepaper.py, stalebot.py      # bot en papel y bot real de la cotización vieja
+    ├── fillsel.py, cruce.py            # selección del relleno: papel vs real, orden a orden
+    ├── regimen.py, asienta.py, salida.py  # régimen, asentamiento del libro y cuándo salir
+    └── clocklag.py, latency.py         # desfase de relojes y presupuesto de latencia
 ```
 
-**Archivos de datos generados:**
-- `results.csv` — resumen por ventana: precios, fills, ganador, P&L, **predicción del Brain
-  por apuesta** (`entry_p_true`, `entry_edge`…) y **tendencia** (`trend_dir`, `trend_strength`).
-- `prices.csv` — snapshot cada ~6s: libro de órdenes + **precio BTC** (`cl_price`, `spot_price`).
-- `brain_stats.json` — estado de entrenamiento del Brain.
-- `status.json` — estado en vivo para el dashboard.
+Los datos (`*.csv`) se generan en ejecución y no se suben al repositorio.
 
-**Herramientas de análisis** (post-procesado, leen los CSV; aceptan ruta opcional a los datos):
+## Ejecutar
+
+Requiere Python 3.10+. Copia `.env.example` a `.env` (las claves solo hacen falta para operar en
+real; por defecto `DRY_RUN=true`).
+
 ```bash
-python analysis.py [carpeta_datos]    # calibración del Brain, win rate por régimen, vol
-python validate.py [carpeta_datos]    # ¿lag? ¿precio +EV? ¿el edge sobrevive al régimen?
-```
-
----
-
-## ⚙️ Instalación
-
-Requiere **Python 3.10+**.
-
-```bash
-git clone https://github.com/ToxicDeimos/polymarket-btc-up-down.git
-cd polymarket-btc-up-down
 pip install -r requirements.txt
-```
-
-### Configuración (`.env`)
-
-Copia `.env.example` a `.env` y rellena tus valores:
-
-```env
-PRIVATE_KEY=0x...                  # Wallet de Polygon (solo necesaria en modo real)
-POLYMARKET_API_KEY=...
-POLYMARKET_SECRET=...
-POLYMARKET_PASSPHRASE=...
-
-# RPC de Polygon para leer Chainlink (gratis en alchemy.com → Polygon PoS Mainnet)
-POLYGON_RPC=https://polygon-mainnet.g.alchemy.com/v2/TU_API_KEY
-
-DRY_RUN=true                       # true = simulación | false = dinero real
+python main.py        # bot
+python dashboard.py   # panel en http://localhost:5000
 ```
 
 ---
 
-## 🚀 Uso
-
-**Terminal 1 — el bot:**
-```bash
-python main.py
-```
-
-**Terminal 2 — el dashboard:**
-```bash
-python dashboard.py
-```
-
-Abre **http://localhost:5000** para ver P&L, win rate, precios en vivo, entrenamiento
-del Brain y el historial de ventanas.
-
----
-
-## 🥧 Despliegue en Raspberry Pi
-
-El bot es ligero (un poll cada 15s) e ideal para correr 24/7 sin depender del PC.
-
-```bash
-sudo apt install -y build-essential python3-dev python3-venv
-python3 -m venv venv && source venv/bin/activate
-pip install -r requirements.txt
-# Copiar tu .env y crear servicios systemd para arranque automático
-```
-
-El dashboard queda accesible en la red local: `http://IP-de-la-raspberry:5000`.
-
----
-
-## ⚠️ Aviso
-
-Software experimental con fines educativos y de investigación. Operar en mercados de
-predicción implica riesgo de pérdida total del capital. Úsalo bajo tu propia
-responsabilidad. **Mantén `DRY_RUN=true` hasta tener evidencia sólida de un edge real.**
+*Proyecto de investigación personal. No es asesoramiento financiero.*
