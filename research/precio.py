@@ -67,11 +67,34 @@ def actividad(filas):
         if f["t"] - ini >= 3600: f["act"] = i - j
 
 
+def resoluciones(wss):
+    """ws -> "Up"/"Down". Prefiere reso_binance.csv al CLOB.
+
+    Desde el bloqueo del 7-oct la Pi no llega a clob/gamma/data-api, asi que _resol no puede
+    resolver nada y con eso se cae el analisis entero. resolver_binance.py calcula el ganador con
+    la regla D3 sobre velas de Binance (~97,9% de acierto en 15m). Si ese fichero existe, manda —
+    y se dice en voz alta cual se esta usando, porque uno es exacto y el otro no.
+    """
+    p = os.path.join(DIR, "reso_binance.csv")
+    if os.path.exists(p):
+        R = {}
+        for r in csv.DictReader(open(p, encoding="utf-8", errors="replace")):
+            try: R[int(r["ws"])] = "Up" if int(r["gana_up"]) else "Down"
+            except Exception: pass
+        hay = {w: v for w, v in R.items() if w in wss}
+        if hay:
+            print(f"resoluciones: {len(hay)} desde reso_binance.csv "
+                  f"(regla D3 sobre Binance, ~97,9% de acierto — NO exacto)")
+            return hay
+    print("resoluciones: preguntando al CLOB (exacto)")
+    return _resol(wss)
+
+
 def main():
     R = carga()
     print(f"{PREFIJO}: {len(R)} disparos del disparador actual")
     if not R: return
-    RES = _resol({int(r["ws"]) for r in R if r.get("ws")})
+    RES = resoluciones({int(r["ws"]) for r in R if r.get("ws")})
     print(f"ventanas resueltas: {len(RES)}")
 
     filas = []

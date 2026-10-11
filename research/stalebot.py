@@ -181,8 +181,9 @@ MAX_ORDERS_DAY = int(os.environ.get("STALEBOT_MAX_ORDERS", "200"))
 # contabilidad (que puede desviarse: makingAmount no siempre viene, y entonces se asume lo peor).
 # Al saltar deja el fichero STOP puesto, asi que tampoco opera si alguien lo relanza sin mirar.
 SALDO_MIN = float(os.environ.get("STALEBOT_SALDO_MIN", "8"))
-SALDO = {"visto": None, "fallos": 0}
+SALDO = {"visto": None, "fallos": 0, "bajos": 0}
 MAX_FALLOS_SALDO = 5
+BAJOS_SEGUIDOS = 3     # comprobaciones seguidas bajo el suelo antes de frenar
 
 # "cid" = conditionId del mercado. Lo conocemos al descubrir la ventana y NO lo guardabamos: sin el,
 # pasadas unas horas no hay forma de resolver nuestras propias operaciones, porque Gamma solo devuelve
@@ -313,9 +314,23 @@ def freno_saldo():
     if SALDO["visto"] is None or abs(s - SALDO["visto"]) >= 0.25:
         print(f"   💰 saldo {s:.2f}$ (freno en {SALDO_MIN:.2f}$)", flush=True)
         SALDO["visto"] = s
+    # 🐛 ARREGLADO el 7-oct-2026. AssetType.COLLATERAL es SOLO EL EFECTIVO: mientras hay acciones
+    # sin resolver, el dinero esta en ellas y la caja baja aunque la cartera valga lo mismo. El
+    # freno salto con 6,64$ de caja cuando la cartera tenia 20,63$, y paro el bot sin necesidad.
+    # Como las ventanas son de 5 minutos, el efectivo vuelve enseguida: se exige que el saldo este
+    # bajo en BAJOS_SEGUIDOS comprobaciones seguidas (una por ventana) antes de frenar. Un bajon de
+    # verdad las encadena; uno por posiciones abiertas, no.
     if s < SALDO_MIN:
-        para(f"saldo {s:.2f}$, por debajo del minimo de {SALDO_MIN:.2f}$")
-        return True
+        SALDO["bajos"] += 1
+        print(f"   ⚠ saldo {s:.2f}$ por debajo de {SALDO_MIN:.2f}$ "
+              f"({SALDO['bajos']}/{BAJOS_SEGUIDOS} seguidas; puede ser dinero en posiciones)",
+              flush=True)
+        if SALDO["bajos"] >= BAJOS_SEGUIDOS:
+            para(f"saldo {s:.2f}$ por debajo de {SALDO_MIN:.2f}$ en "
+                 f"{BAJOS_SEGUIDOS} comprobaciones seguidas")
+            return True
+    else:
+        SALDO["bajos"] = 0
     return False
 
 
